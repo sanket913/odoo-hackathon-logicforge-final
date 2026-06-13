@@ -1,0 +1,393 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  Admin
+  Sales_User
+  Purchase_User
+  Manufacturing_User
+  Inventory_Manager
+  Business_Owner
+}
+
+enum UserStatus {
+  Active
+  Pending
+  Rejected
+  Inactive
+}
+
+enum ProductType {
+  Finished
+  Component
+}
+
+enum Strategy {
+  MTS
+  MTO
+}
+
+enum ProcurementType {
+  Purchase
+  Manufacturing
+}
+
+enum SOStatus {
+  Draft
+  Confirmed
+  Partially_Delivered
+  Fully_Delivered
+  Cancelled
+}
+
+enum POStatus {
+  Draft
+  Confirmed
+  Partially_Received
+  Fully_Received
+  Cancelled
+}
+
+enum POSource {
+  Manual
+  Auto_from_Sales_Order
+  Low_Stock_Replenishment
+}
+
+enum MOStatus {
+  Draft
+  Confirmed
+  In_Progress
+  Done
+  Cancelled
+}
+
+enum WOStatus {
+  Pending
+  In_Progress
+  Done
+}
+
+enum MovementType {
+  SALE_RESERVE
+  SALE_DELIVERY
+  PURCHASE_RECEIPT
+  MO_COMPONENT_RESERVE
+  MO_COMPONENT_CONSUME
+  MO_FINISHED_PRODUCE
+  ADJUSTMENT
+  RESERVATION_RELEASE
+  PROCUREMENT_CREATED
+}
+
+enum AlertType {
+  LOW_STOCK
+  MATERIAL_SHORTAGE
+  PROCUREMENT_REQUIRED
+  ORDER_DELAY_RISK
+  BOTTLENECK_RISK
+  PURCHASE_OVERDUE
+  WORK_ORDER_BLOCKED
+  DELIVERY_READY
+  ERPILOT_RECOMMENDATION
+}
+
+enum AlertSeverity {
+  Info
+  Warning
+  Critical
+}
+
+model User {
+  id           String     @id
+  name         String
+  email        String     @unique
+  passwordHash String
+  role         Role
+  status       UserStatus @default(Active)
+  lastLogin    DateTime?
+  mobileNumber String?
+  address      String?
+  employeeCode String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  manufacturingOrders ManufacturingOrder[] @relation("MOAssignee")
+}
+
+model Customer {
+  id String @id
+  name String
+  email String
+  phone String
+  company String
+  address String
+  active Boolean @default(true)
+  salesOrders SalesOrder[]
+}
+
+model Vendor {
+  id String @id
+  name String
+  contact String
+  email String
+  phone String
+  address String
+  leadTimeDays Int
+  reliabilityScore Int @default(80)
+  costScore Int @default(75)
+  lat Float
+  lng Float
+  supplies Json
+  active Boolean @default(true)
+  products Product[]
+  purchaseOrders PurchaseOrder[]
+}
+
+model ManufacturingPlant {
+  id        String   @id
+  name      String
+  code      String   @unique
+  address   String
+  city      String
+  lat       Float
+  lng       Float
+  capacity  Int      @default(0)
+  status    String   @default("Active")
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id String @id
+  name String
+  sku String @unique
+  type ProductType
+  salesPrice Float @default(0)
+  costPrice Float @default(0)
+  onHand Int @default(0)
+  reserved Int @default(0)
+  strategy Strategy
+  procureOnDemand Boolean @default(false)
+  procurementType ProcurementType
+  reorderLevel Int @default(0)
+  active Boolean @default(true)
+  vendorId String?
+  bomId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  vendor Vendor? @relation(fields: [vendorId], references: [id])
+  bom Bom? @relation("ProductBom", fields: [bomId], references: [id])
+  producedBom Bom? @relation("BomProduct")
+  stockMoves StockMove[]
+  salesLines SalesOrderLine[]
+  purchaseLines PurchaseOrderLine[]
+  manufacturingOrders ManufacturingOrder[]
+  bomComponents BomComponent[]
+  inventoryReservations InventoryReservation[]
+}
+
+model Bom {
+  id String @id
+  name String
+  productId String @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  product Product @relation("BomProduct", fields: [productId], references: [id])
+  assignedProducts Product[] @relation("ProductBom")
+  components BomComponent[]
+  operations BomOperation[]
+  manufacturingOrders ManufacturingOrder[]
+  active Boolean @default(true)
+}
+
+model BomComponent {
+  id String @id
+  bomId String
+  productId String
+  qty Int
+  bom Bom @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+}
+
+model BomOperation {
+  id String @id
+  bomId String
+  name String
+  minutes Int
+  workCenter String
+  sequence Int
+  workCenterId String?
+  bom Bom @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  workCenterRef WorkCenter? @relation(fields: [workCenterId], references: [id])
+}
+
+model SalesOrder {
+  id String @id
+  number String @unique
+  customerId String
+  date DateTime
+  status SOStatus @default(Draft)
+  procurementTriggered Boolean @default(false)
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  customer Customer @relation(fields: [customerId], references: [id])
+  lines SalesOrderLine[]
+  purchaseOrders PurchaseOrder[]
+  manufacturingOrders ManufacturingOrder[]
+  reservations InventoryReservation[]
+}
+
+model SalesOrderLine {
+  id String @id
+  salesOrderId String
+  productId String
+  qty Int
+  unitPrice Float
+  deliveredQty Int @default(0)
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+}
+
+model PurchaseOrder {
+  id String @id
+  number String @unique
+  vendorId String
+  date DateTime
+  expectedDate DateTime
+  status POStatus @default(Draft)
+  source POSource @default(Manual)
+  sourceSOId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  vendor Vendor @relation(fields: [vendorId], references: [id])
+  sourceSO SalesOrder? @relation(fields: [sourceSOId], references: [id])
+  lines PurchaseOrderLine[]
+}
+
+model PurchaseOrderLine {
+  id String @id
+  purchaseOrderId String
+  productId String
+  qty Int
+  unitPrice Float
+  receivedQty Int @default(0)
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+}
+
+model ManufacturingOrder {
+  id String @id
+  number String @unique
+  productId String
+  qty Int
+  bomId String
+  assignee String
+  assigneeUserId String?
+  sourceSOId String?
+  status MOStatus @default(Confirmed)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  product Product @relation(fields: [productId], references: [id])
+  bom Bom @relation(fields: [bomId], references: [id])
+  assigneeUser User? @relation("MOAssignee", fields: [assigneeUserId], references: [id])
+  sourceSO SalesOrder? @relation(fields: [sourceSOId], references: [id])
+  workOrders WorkOrder[]
+}
+
+model WorkOrder {
+  id String @id
+  manufacturingOrderId String
+  name String
+  workCenter String
+  workCenterId String?
+  minutes Int
+  status WOStatus @default(Pending)
+  sequence Int
+  manufacturingOrder ManufacturingOrder @relation(fields: [manufacturingOrderId], references: [id], onDelete: Cascade)
+  workCenterRef WorkCenter? @relation(fields: [workCenterId], references: [id])
+}
+
+model WorkCenter {
+  id String @id
+  name String @unique
+  dailyCapacityMinutes Int @default(480)
+  active Boolean @default(true)
+  operations BomOperation[]
+  workOrders WorkOrder[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model StockMove {
+  id String @id
+  date DateTime
+  productId String
+  type MovementType
+  change Int
+  before Int
+  after Int
+  reference String
+  referenceType String @default("System")
+  referenceId String @default("")
+  note String
+  user String @default("System")
+  createdAt DateTime @default(now())
+  product Product @relation(fields: [productId], references: [id])
+}
+
+model InventoryReservation {
+  id String @id
+  productId String
+  salesOrderId String?
+  qty Int
+  status String @default("Active")
+  createdAt DateTime @default(now())
+  releasedAt DateTime?
+  product Product @relation(fields: [productId], references: [id])
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id])
+}
+
+model AuditLog {
+  id String @id
+  timestamp DateTime
+  user String
+  action String
+  entityType String
+  entityId String
+  message String
+  before Json?
+  after Json?
+}
+
+model Alert {
+  id String @id
+  type AlertType
+  severity AlertSeverity @default(Info)
+  title String
+  message String
+  entityType String?
+  entityId String?
+  actionLink String?
+  read Boolean @default(false)
+  createdAt DateTime @default(now())
+}
+
+model ERPilotAnalysis {
+  id String @id
+  type String
+  entityType String?
+  entityId String?
+  input Json?
+  output Json
+  source String @default("rule-based")
+  createdBy String
+  createdAt DateTime @default(now())
+}

@@ -1,0 +1,4 @@
+ALTER TABLE `User`
+  ADD COLUMN `mobileNumber` VARCHAR(191) NULL,
+  ADD COLUMN `address` VARCHAR(191) NULL,
+  ADD COLUMN `employeeCode` VARCHAR(191) NULL;
