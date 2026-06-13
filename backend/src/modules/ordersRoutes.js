@@ -42,14 +42,23 @@ salesRouter.put("/:id", async (req, res) => {
 export const purchaseRouter = Router();
 purchaseRouter.get("/", async (_req, res) => ok(res, (await prisma.purchaseOrder.findMany({ include: includePO, orderBy: { createdAt: "desc" } })).map(purchaseOrderDto)));
 purchaseRouter.post("/", async (req, res) => {
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  if (!req.body.vendorId || !req.body.date || !req.body.responsiblePerson || !lines.length) {
+    throw fail(400, "PO_INCOMPLETE", "Vendor, creation date, responsible person and at least one product line are required");
+  }
+  if (lines.some((line) => !line.productId || Number(line.qty) <= 0 || Number(line.unitPrice) <= 0)) {
+    throw fail(400, "PO_INCOMPLETE_LINES", "Every purchase order line must have product, ordered quantity and cost unit price");
+  }
   const number = `PO-${3001 + await prisma.purchaseOrder.count()}`;
-  const po = await prisma.purchaseOrder.create({ data: { id: id("po"), number, vendorId: req.body.vendorId, date: new Date(req.body.date || Date.now()), expectedDate: new Date(req.body.expectedDate || Date.now()), source: String(req.body.source || "Manual").replaceAll(" ", "_"), lines: { create: req.body.lines.map((l) => ({ id: id("pol"), productId: l.productId, qty: l.qty, unitPrice: l.unitPrice })) } }, include: includePO });
+  const po = await prisma.purchaseOrder.create({ data: { id: id("po"), number, vendorId: req.body.vendorId, responsiblePerson: req.body.responsiblePerson, date: new Date(req.body.date || Date.now()), expectedDate: new Date(req.body.expectedDate || Date.now()), source: String(req.body.source || "Manual").replaceAll(" ", "_"), lines: { create: lines.map((l) => ({ id: id("pol"), productId: l.productId, qty: Number(l.qty), unitPrice: Number(l.unitPrice) })) } }, include: includePO });
   await audit(req.user, "PO_CREATED", "PurchaseOrder", po.number, `Created ${po.number}`);
   ok(res, purchaseOrderDto(po), 201);
 });
 purchaseRouter.get("/:id", async (req, res) => ok(res, purchaseOrderDto(await prisma.purchaseOrder.findUnique({ where: { id: req.params.id }, include: includePO }))));
 purchaseRouter.post("/:id/confirm", async (req, res) => {
   const before = await prisma.purchaseOrder.findUnique({ where: { id: req.params.id }, include: includePO });
+  if (!before) throw fail(404, "PO_NOT_FOUND", "Purchase order not found");
+  if (before.status !== "Draft") throw fail(409, "PO_NOT_DRAFT", "Only draft purchase orders can be confirmed");
   const po = await prisma.purchaseOrder.update({ where: { id: req.params.id }, data: { status: "Confirmed" }, include: includePO });
   await audit(req.user, "PO_CONFIRMED", "PurchaseOrder", po.number, `Confirmed ${po.number}`, prisma, { status: before?.status }, { status: po.status });
   ok(res, purchaseOrderDto(po));
@@ -63,14 +72,24 @@ purchaseRouter.post("/:id/cancel", async (req, res) => {
 });
 purchaseRouter.put("/:id", async (req, res) => {
   const before = await prisma.purchaseOrder.findUnique({ where: { id: req.params.id }, include: includePO });
+  if (!before) throw fail(404, "PO_NOT_FOUND", "Purchase order not found");
+  if (before.status !== "Draft") throw fail(409, "PO_READONLY", "Only draft purchase orders can be edited");
+  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  if (!req.body.vendorId || !req.body.date || !req.body.responsiblePerson || !lines.length) {
+    throw fail(400, "PO_INCOMPLETE", "Vendor, creation date, responsible person and at least one product line are required");
+  }
+  if (lines.some((line) => !line.productId || Number(line.qty) <= 0 || Number(line.unitPrice) <= 0)) {
+    throw fail(400, "PO_INCOMPLETE_LINES", "Every purchase order line must have product, ordered quantity and cost unit price");
+  }
   if (Array.isArray(req.body.lines)) {
     await prisma.purchaseOrderLine.deleteMany({ where: { purchaseOrderId: req.params.id } });
   }
   const po = await prisma.purchaseOrder.update({ where: { id: req.params.id }, data: {
     vendorId: req.body.vendorId,
+    responsiblePerson: req.body.responsiblePerson,
     date: req.body.date ? new Date(req.body.date) : undefined,
     expectedDate: req.body.expectedDate ? new Date(req.body.expectedDate) : undefined,
-    lines: Array.isArray(req.body.lines) ? { create: req.body.lines.map((l) => ({ id: id("pol"), productId: l.productId, qty: Number(l.qty), unitPrice: Number(l.unitPrice) })) } : undefined,
+    lines: { create: lines.map((l) => ({ id: id("pol"), productId: l.productId, qty: Number(l.qty), unitPrice: Number(l.unitPrice) })) },
   }, include: includePO });
   await audit(req.user, "PO_UPDATED", "PurchaseOrder", po.number, `Updated ${po.number}`, prisma, before, po);
   ok(res, purchaseOrderDto(po));
@@ -81,8 +100,8 @@ manufacturingRouter.get("/", async (_req, res) => ok(res, (await prisma.manufact
 manufacturingRouter.post("/", async (req, res, next) => {
   try {
     const qty = Number(req.body.qty);
-    if (!req.body.productId || !req.body.bomId || !Number.isFinite(qty) || qty <= 0) {
-      throw fail(400, "INVALID_MO", "Finished product, BoM, and a positive quantity are required");
+    if (!req.body.productId || !req.body.bomId || !req.body.assignee || !req.body.scheduledDate || !Number.isFinite(qty) || qty <= 0) {
+      throw fail(400, "INVALID_MO", "Finished product, BoM, assignee, schedule date and a positive quantity are required");
     }
 
     const [product, bom] = await Promise.all([
@@ -101,7 +120,8 @@ manufacturingRouter.post("/", async (req, res, next) => {
         productId: product.id,
         qty,
         bomId: bom.id,
-        assignee: req.body.assignee || req.user?.name || "System",
+        assignee: req.body.assignee,
+        scheduledDate: req.body.scheduledDate ? new Date(req.body.scheduledDate) : new Date(),
         sourceSOId: req.body.sourceSOId,
         status: req.body.status || "Draft",
         workOrders: { create: bom.operations.map((o, i) => ({ id: id("wo"), name: o.name, workCenter: o.workCenter, minutes: o.minutes * qty, sequence: i + 1 })) },
@@ -121,8 +141,8 @@ manufacturingRouter.put("/:id", async (req, res, next) => {
     if (!before) throw fail(404, "MO_NOT_FOUND", "Manufacturing order not found");
     if (before.status !== "Draft") throw fail(409, "MO_READONLY", "Only draft manufacturing orders can be edited");
     const qty = Number(req.body.qty);
-    if (!req.body.productId || !req.body.bomId || !req.body.assignee || !Number.isFinite(qty) || qty <= 0) {
-      throw fail(400, "INVALID_MO", "Finished product, BoM, assignee and a positive quantity are required");
+    if (!req.body.productId || !req.body.bomId || !req.body.assignee || !req.body.scheduledDate || !Number.isFinite(qty) || qty <= 0) {
+      throw fail(400, "INVALID_MO", "Finished product, BoM, assignee, schedule date and a positive quantity are required");
     }
     const [product, bom] = await Promise.all([
       prisma.product.findUnique({ where: { id: req.body.productId } }),
@@ -139,6 +159,7 @@ manufacturingRouter.put("/:id", async (req, res, next) => {
         qty,
         bomId: bom.id,
         assignee: req.body.assignee,
+        scheduledDate: req.body.scheduledDate ? new Date(req.body.scheduledDate) : before.scheduledDate,
         workOrders: { create: bom.operations.map((o, i) => ({ id: id("wo"), name: o.name, workCenter: o.workCenter, minutes: o.minutes * qty, sequence: i + 1 })) },
       },
       include: includeManufacturing,

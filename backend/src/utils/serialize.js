@@ -79,7 +79,7 @@ export function purchaseOrderDto(o) {
   const lines = o.lines || [];
   return o && {
     id: o.id, number: o.number, reference: o.number, vendorId: o.vendorId, date: o.date.toISOString().slice(0, 10), expectedDate: o.expectedDate.toISOString().slice(0, 10),
-    vendorName: o.vendor?.name, purchasePersonName: "Purchase Team",
+    vendorName: o.vendor?.name, purchasePersonName: o.responsiblePerson || "Purchase Team", responsiblePerson: o.responsiblePerson || "",
     lines: lines.map((l) => ({ productId: l.productId, qty: l.qty, unitPrice: l.unitPrice })),
     status: fromDbStatus(o.status), receivedQty: Object.fromEntries(lines.map((l) => [l.productId, l.receivedQty])),
     total: lines.reduce((sum, l) => sum + l.qty * l.unitPrice, 0),
@@ -105,7 +105,7 @@ export function manufacturingOrderDto(o) {
   return o && {
     id: o.id, number: o.number, productId: o.productId, qty: o.qty, bomId: o.bomId, assignee: o.assignee,
     reference: o.number, finishedProductName: o.product?.name, quantity: o.qty, unit: "Units", assigneeName: o.assignee,
-    scheduledDate: o.createdAt.toISOString().slice(0, 10),
+    scheduledDate: (o.scheduledDate || o.createdAt).toISOString().slice(0, 10),
     componentStatus: components.every((c) => c.componentStatus === "Available") ? "Available" : "Not Available",
     components,
     sourceSOId: o.sourceSOId || undefined, status: fromDbStatus(o.status),

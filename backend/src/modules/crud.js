@@ -126,26 +126,39 @@ export function simpleRouter(model, dto, prefix) {
 
 export function bomsRouter() {
   const r = Router();
-  const include = { product: true, components: true, operations: true };
+  const include = { product: true, components: { include: { product: true } }, operations: true };
   r.get("/", async (_req, res) => ok(res, (await prisma.bom.findMany({ include })).map(bomDto)));
   r.get("/:id", async (req, res) => ok(res, bomDto(await prisma.bom.findUnique({ where: { id: req.params.id }, include }))));
   r.post("/", async (req, res) => {
+    const components = Array.isArray(req.body.components) ? req.body.components : [];
+    const operations = Array.isArray(req.body.operations) ? req.body.operations : [];
+    if (!req.body.productId || !req.body.name || !components.length || !operations.length) throw fail(400, "BOM_INCOMPLETE", "Finished product, BoM reference, components and work orders are required");
+    if (components.some((c) => !c.productId || Number(c.qty) <= 0)) throw fail(400, "BOM_COMPONENTS_INVALID", "Every component needs a product and quantity");
+    if (operations.some((o) => !o.name || !o.workCenter || Number(o.minutes) <= 0)) throw fail(400, "BOM_OPERATIONS_INVALID", "Every work order needs operation, work center and expected duration");
     const b = await prisma.bom.create({ data: {
       id: id("b"), name: req.body.name, productId: req.body.productId,
-      components: { create: (req.body.components || []).map((c) => ({ id: id("bc"), productId: c.productId, qty: c.qty })) },
-      operations: { create: (req.body.operations || []).map((o, i) => ({ id: id("bo"), name: o.name, minutes: o.minutes, workCenter: o.workCenter, sequence: i + 1 })) },
+      active: req.body.active !== false,
+      components: { create: components.map((c) => ({ id: id("bc"), productId: c.productId, qty: Number(c.qty) })) },
+      operations: { create: operations.map((o, i) => ({ id: id("bo"), name: o.name, minutes: Number(o.minutes), workCenter: o.workCenter, sequence: i + 1 })) },
     }, include });
     await audit(req.user, "BOM_CREATED", "BoM", b.id, `Created BoM ${b.name}`, prisma, undefined, b);
     ok(res, bomDto(b), 201);
   });
   r.put("/:id", async (req, res) => {
     const before = await prisma.bom.findUnique({ where: { id: req.params.id }, include });
+    const components = Array.isArray(req.body.components) ? req.body.components : [];
+    const operations = Array.isArray(req.body.operations) ? req.body.operations : [];
+    if (!before) throw fail(404, "BOM_NOT_FOUND", "BoM not found");
+    if (!req.body.productId || !req.body.name || !components.length || !operations.length) throw fail(400, "BOM_INCOMPLETE", "Finished product, BoM reference, components and work orders are required");
+    if (components.some((c) => !c.productId || Number(c.qty) <= 0)) throw fail(400, "BOM_COMPONENTS_INVALID", "Every component needs a product and quantity");
+    if (operations.some((o) => !o.name || !o.workCenter || Number(o.minutes) <= 0)) throw fail(400, "BOM_OPERATIONS_INVALID", "Every work order needs operation, work center and expected duration");
     await prisma.bomComponent.deleteMany({ where: { bomId: req.params.id } });
     await prisma.bomOperation.deleteMany({ where: { bomId: req.params.id } });
     const b = await prisma.bom.update({ where: { id: req.params.id }, data: {
       name: req.body.name, productId: req.body.productId,
-      components: { create: (req.body.components || []).map((c) => ({ id: id("bc"), productId: c.productId, qty: c.qty })) },
-      operations: { create: (req.body.operations || []).map((o, i) => ({ id: id("bo"), name: o.name, minutes: o.minutes, workCenter: o.workCenter, sequence: i + 1 })) },
+      active: req.body.active !== false,
+      components: { create: components.map((c) => ({ id: id("bc"), productId: c.productId, qty: Number(c.qty) })) },
+      operations: { create: operations.map((o, i) => ({ id: id("bo"), name: o.name, minutes: Number(o.minutes), workCenter: o.workCenter, sequence: i + 1 })) },
     }, include });
     await audit(req.user, "BOM_UPDATED", "BoM", b.id, `Updated BoM ${b.name}`, prisma, before, b);
     ok(res, bomDto(b));

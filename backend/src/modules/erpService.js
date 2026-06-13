@@ -31,15 +31,18 @@ async function alert(type, severity, title, message, entityType, entityId, actio
 export async function move(productId, type, change, reference, note, tx = prisma, reserveOnly = false) {
   const p = await tx.product.findUnique({ where: { id: productId } });
   if (!p) throw fail(404, "PRODUCT_NOT_FOUND", "Product not found");
-  const before = p.onHand;
-  const after = reserveOnly ? before : before + change;
+  const physicalBefore = p.onHand;
+  const availableBefore = p.onHand - p.reserved;
+  const ledgerChange = reserveOnly ? -Math.abs(change) : change;
+  const before = reserveOnly ? availableBefore : physicalBefore;
+  const after = reserveOnly ? availableBefore + ledgerChange : physicalBefore + change;
   await tx.product.update({
     where: { id: productId },
     data: reserveOnly ? { reserved: { increment: change } } : { onHand: after },
   });
   const stockMove = await tx.stockMove.create({
     data: {
-      id: id("sm"), date: new Date(), productId, type, change, before, after, reference, note,
+      id: id("sm"), date: new Date(), productId, type, change: ledgerChange, before, after, reference, note,
       referenceType: reference.split("-")[0] || "System", referenceId: reference, user: "System",
     },
   });
@@ -179,9 +182,10 @@ export async function cancelSalesOrder(soId, user) {
         const p = await tx.product.findUnique({ where: { id: line.productId } });
         const releaseQty = Math.min(p.reserved, Math.max(0, line.qty - line.deliveredQty));
         if (releaseQty > 0) {
+          const beforeAvailable = p.onHand - p.reserved;
           await tx.product.update({ where: { id: p.id }, data: { reserved: { decrement: releaseQty } } });
           await tx.inventoryReservation.updateMany({ where: { productId: p.id, salesOrderId: so.id, status: "Active" }, data: { status: "Released", releasedAt: new Date() } });
-          await tx.stockMove.create({ data: { id: id("sm"), date: new Date(), productId: p.id, type: "RESERVATION_RELEASE", change: -releaseQty, before: p.onHand, after: p.onHand, reference: so.number, referenceType: "SO", referenceId: so.id, note: `Released reservation for ${so.number}`, user: user?.name || "System" } });
+          await tx.stockMove.create({ data: { id: id("sm"), date: new Date(), productId: p.id, type: "RESERVATION_RELEASE", change: releaseQty, before: beforeAvailable, after: beforeAvailable + releaseQty, reference: so.number, referenceType: "SO", referenceId: so.id, note: `Released reservation for ${so.number}`, user: user?.name || "System" } });
         }
       }
     }
@@ -195,6 +199,7 @@ export async function receivePurchaseOrder(poId, qtyMap = {}, user) {
   return prisma.$transaction(async (tx) => {
     const po = await tx.purchaseOrder.findUnique({ where: { id: poId }, include: includePO });
     if (!po) throw fail(404, "PO_NOT_FOUND", "Purchase order not found");
+    if (!["Confirmed", "Partially_Received"].includes(po.status)) throw fail(409, "PO_NOT_RECEIVABLE", "Confirm the purchase order before receiving, and do not receive cancelled or completed orders");
     for (const line of po.lines) {
       const remaining = Math.max(0, line.qty - line.receivedQty);
       const requested = qtyMap[line.productId] ?? remaining;

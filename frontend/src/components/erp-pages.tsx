@@ -107,6 +107,7 @@ export function RecordForm({ section, id }: { section: string; id?: string }) {
   if (section === "sales-orders") return <SalesOrderForm id={id} />;
   if (section === "purchase-orders") return <PurchaseOrderForm id={id} />;
   if (section === "manufacturing-orders") return <ManufacturingOrderForm id={id} />;
+  if (section === "bom") return <BomForm id={id} />;
   const config = configs[section]; const navigate=useNavigate(); const isNew=!id || id==="new"; const [form,setForm]=useState<Row>(defaultForm); const [busy,setBusy]=useState(false);
   const { loading,error,reload }=useApiData(async()=>{ if(isNew) return null; const result=await config.resource.get<Row>(id); setForm(prev=>({...prev,...result})); return result; },[section,id]);
   const set=(k:string,v:unknown)=>setForm(p=>({...p,[k]:v})); const back=()=>navigate({to:"/$",params:{_splat:section}});
@@ -127,6 +128,80 @@ function FormField({field,value,set,section}:{field:string;value:unknown;set:(k:
   if(field==="bomId"&&section==="products"&&String((value??""))===""){} const numeric=["salesPrice","costPrice","onHandQty","reservedQty","leadTimeDays","reliability","quantity"].includes(field);
   if(["status","procurementType"].includes(field)){ const statusOptions = ["customers","vendors","products"].includes(section) ? ["Active","Archived"] : ["Draft","Confirmed","In Progress","Done","Cancelled"]; return <Field label={labels[field]}><select className={inputClass} value={String(value??"")} onChange={e=>set(field,e.target.value)}>{(field==="status"?statusOptions:["Purchase","Manufacturing"]).map(v=><option key={v}>{v}</option>)}</select></Field>; }
   return <Field label={labels[field]||field} required={["name","sku","reference","partnerId","quantity"].includes(field)}><input required={["name","sku","reference","partnerId","quantity"].includes(field)} type={numeric?"number":field.includes("Date")||field==="scheduledDate"?"date":field==="email"?"email":"text"} min={numeric?0:undefined} className={inputClass} value={String(value??"")} onChange={e=>set(field,e.target.value)} maxLength={numeric?undefined:300}/></Field>;
+}
+
+function BomForm({ id }: { id?: string }) {
+  const navigate = useNavigate();
+  const isNew = !id || id === "new";
+  const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<"components" | "work">("components");
+  const [form, setForm] = useState<Row>({ name: "", productId: "", quantity: 1, notes: "", status: "Active", components: [], operations: [] });
+  const { data: bomsData } = useApiData(() => api.bom.list(), []);
+  const { data: productsData } = useApiData(() => api.products.list(), []);
+  const { loading, error, reload } = useApiData(async () => {
+    if (isNew) return null;
+    const result = await api.bom.get<Row>(String(id));
+    setForm((prev) => ({ ...prev, ...result, name: result.name || result.reference || "", quantity: result.quantity || 1, components: (result.components as Row[]) || [], operations: (result.operations as Row[]) || [] }));
+    return result;
+  }, [id]);
+  const products = unwrapRows(productsData);
+  const components = ((form.components || []) as Row[]);
+  const operations = ((form.operations || []) as Row[]);
+  const nextReference = isNew ? `BOM-${String(unwrapRows(bomsData).length + 1).padStart(6, "0")}` : String(form.reference || form.name || "");
+  const finishedProduct = products.find((p) => String(p.id) === String(form.productId));
+  const set = (key: string, value: unknown) => setForm((prev) => ({ ...prev, [key]: value }));
+  const addComponent = () => set("components", [...components, { productId: "", qty: "", units: "Units" }]);
+  const addOperation = () => set("operations", [...operations, { name: "", workCenter: "", minutes: "" }]);
+  const updateComponent = (index: number, key: string, value: unknown) => set("components", components.map((line, i) => i === index ? { ...line, [key]: value, units: "Units" } : line));
+  const updateOperation = (index: number, key: string, value: unknown) => set("operations", operations.map((line, i) => i === index ? { ...line, [key]: value } : line));
+  const removeComponent = (index: number) => set("components", components.filter((_, i) => i !== index));
+  const removeOperation = (index: number) => set("operations", operations.filter((_, i) => i !== index));
+  const validate = () => {
+    if (!form.productId) return "Finished Product is required";
+    if (Number(form.quantity || 0) <= 0) return "Quantity must be greater than zero";
+    if (!components.length) return "Add at least one component";
+    if (components.some((line) => !line.productId || Number(line.qty ?? line.quantity ?? 0) <= 0)) return "Every component needs a product and quantity";
+    if (!operations.length) return "Add at least one work order";
+    if (operations.some((line) => !(line.name || line.operation) || !line.workCenter || Number(line.minutes ?? line.expectedDuration ?? 0) <= 0)) return "Every work order needs operation, work center and expected duration";
+    return "";
+  };
+  const payload = () => ({
+    name: String(form.name || nextReference),
+    productId: form.productId,
+    quantity: Number(form.quantity || 1),
+    notes: form.notes || "",
+    active: String(form.status || "Active") === "Active",
+    components: components.map((line) => ({ productId: line.productId, qty: Number(line.qty ?? line.quantity ?? 0) })),
+    operations: operations.map((line) => ({ name: line.name || line.operation, workCenter: line.workCenter, minutes: Number(line.minutes ?? line.expectedDuration ?? 0) })),
+  });
+  const save = async () => {
+    const message = validate();
+    if (message) { toast.error(message); return; }
+    setBusy(true);
+    try {
+      const result = isNew ? await api.bom.create<Row>(payload()) : await api.bom.update<Row>(String(id), payload());
+      toast.success("BoM saved");
+      navigate({ to: "/$", params: { _splat: `bom/${result.id || id}` }, replace: true });
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Save failed"); }
+    finally { setBusy(false); }
+  };
+  const openLogs = () => navigate({ to: "/$", params: { _splat: "audit-logs" }, search: { module: "BoM", recordId: form.reference || form.name || id || nextReference } });
+  if (loading && !isNew) return <StatePanel type="loading" />;
+  if (error) return <StatePanel type="error" message={error} retry={reload} />;
+  return <><div className="mb-5 rounded-lg border border-border bg-card shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4"><div><p className="text-sm font-semibold text-muted-foreground">Bill of Materials</p><h1 className="mt-1 text-2xl font-bold">{isNew ? "New BoM" : nextReference}</h1></div><div className="flex flex-wrap items-center gap-2"><Button variant="outline" onClick={() => navigate({ to: "/$", params: { _splat: "bom" } })}>Back</Button><Button onClick={save} disabled={busy}><Save />{busy ? "Saving..." : "Save"}</Button><Button variant="outline" onClick={openLogs}><FileClock />Logs</Button></div></div><div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"><div className="rounded-md border border-dashed border-border px-3 py-1.5 font-semibold">{nextReference || "BOM Auto"}</div><StatusPill value={String(form.status || "Active")} /></div></div>
+    <div className="grid gap-5">
+      <section className="rounded-lg border border-border bg-card p-5"><h2 className="mb-5 font-semibold">General Information</h2><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <Field label="BoM Reference"><input disabled className={inputClass} value={nextReference} /></Field>
+        <Field label="Finished Product" required><select required className={inputClass} value={String(form.productId || "")} onChange={(e) => set("productId", e.target.value)}><option value="">Select finished product</option>{products.map((p) => <option key={String(p.id)} value={String(p.id)}>{String(p.name)} - {String(p.sku)}</option>)}</select></Field>
+        <Field label="Quantity" required><input required type="number" min={1} className={inputClass} value={String(form.quantity || 1)} onChange={(e) => set("quantity", e.target.value)} /></Field>
+        <Field label="Finished Product Preview"><input disabled className={inputClass} value={finishedProduct ? `${String(finishedProduct.name)} - ${String(finishedProduct.sku)}` : ""} /></Field>
+        <Field label="Reference / Notes"><input className={inputClass} value={String(form.notes || "")} onChange={(e) => set("notes", e.target.value)} maxLength={300} /></Field>
+        <Field label="Status"><select className={inputClass} value={String(form.status || "Active")} onChange={(e) => set("status", e.target.value)}><option>Active</option><option>Archived</option></select></Field>
+      </div></section>
+      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div className="flex gap-2"><Button type="button" variant={tab === "components" ? "secondary" : "outline"} onClick={() => setTab("components")}>Components</Button><Button type="button" variant={tab === "work" ? "secondary" : "outline"} onClick={() => setTab("work")}>Work Orders</Button></div>{tab === "components" ? <Button type="button" variant="outline" size="sm" onClick={addComponent}>Add a product</Button> : <Button type="button" variant="outline" size="sm" onClick={addOperation}>Add a line</Button>}</div>
+        {tab === "components" ? <div className="overflow-x-auto"><table className="w-full min-w-[860px] text-sm"><thead><tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground"><th className="px-3 py-2">Components</th><th className="px-3 py-2">To Consume</th><th className="px-3 py-2">Units</th><th className="px-3 py-2"></th></tr></thead><tbody>{components.length ? components.map((line, index) => <tr key={index} className="border-b border-border align-top"><td className="px-3 py-3"><select required className={inputClass} value={String(line.productId || "")} onChange={(e) => updateComponent(index, "productId", e.target.value)}><option value="">Select component</option>{products.filter((p) => String(p.id) !== String(form.productId)).map((p) => <option key={String(p.id)} value={String(p.id)}>{String(p.name)} - {String(p.sku)}</option>)}</select></td><td className="px-3 py-3"><input required type="number" min={1} placeholder="Quantity" className={inputClass} value={String(line.qty ?? line.quantity ?? "")} onChange={(e) => updateComponent(index, "qty", e.target.value)} /></td><td className="px-3 py-3"><input disabled className={inputClass} value={String(line.units || "Units")} /></td><td className="px-3 py-3"><Button type="button" variant="ghost" size="icon" onClick={() => removeComponent(index)}><Trash2 className="text-destructive" /></Button></td></tr>) : <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">Add products required to manufacture this finished product.</td></tr>}</tbody></table></div> : <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-sm"><thead><tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground"><th className="px-3 py-2">Operations</th><th className="px-3 py-2">Work Center</th><th className="px-3 py-2">Expected Duration</th><th className="px-3 py-2"></th></tr></thead><tbody>{operations.length ? operations.map((line, index) => <tr key={index} className="border-b border-border align-top"><td className="px-3 py-3"><input required placeholder="Operation" className={inputClass} value={String(line.name || line.operation || "")} onChange={(e) => updateOperation(index, "name", e.target.value)} /></td><td className="px-3 py-3"><input required placeholder="Work Center" className={inputClass} value={String(line.workCenter || "")} onChange={(e) => updateOperation(index, "workCenter", e.target.value)} /></td><td className="px-3 py-3"><input required type="number" min={1} placeholder="Minutes" className={inputClass} value={String(line.minutes ?? line.expectedDuration ?? "")} onChange={(e) => updateOperation(index, "minutes", e.target.value)} /></td><td className="px-3 py-3"><Button type="button" variant="ghost" size="icon" onClick={() => removeOperation(index)}><Trash2 className="text-destructive" /></Button></td></tr>) : <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">Add operations that should become work orders on manufacturing orders.</td></tr>}</tbody></table></div>}
+      </section>
+    </div></>;
 }
 
 function SalesOrderForm({ id }: { id?: string }) {
@@ -219,11 +294,15 @@ function SalesOrderForm({ id }: { id?: string }) {
     catch (err) { toast.error(err instanceof Error ? err.message : "Delivery failed"); }
   };
   const cancel = async () => { try { await api.salesOrders.action(String(id), "cancel"); toast.success("Sales order cancelled"); reload(); } catch (err) { toast.error(err instanceof Error ? err.message : "Cancel failed"); } };
+  const openLogs = () => navigate({ to: "/$", params: { _splat: "audit-logs" }, search: { module: "SalesOrder", recordId: form.reference || form.number || id || nextReference } });
+  const canConfirm = isNew || status === "Draft";
+  const canDeliver = !isNew && ["Confirmed", "Partially Delivered", "Partially_Delivered"].includes(status);
+  const canCancel = !isNew && !["Cancelled", "Fully Delivered", "Fully_Delivered"].includes(status);
   if (loading && !isNew) return <StatePanel type="loading" />;
   if (error) return <StatePanel type="error" message={error} retry={reload} />;
-  return <><PageHeader title={isNew ? "New Sale Order" : String(form.reference || form.number || "Sale Order")} description={isNew ? "Create a database-backed sales order in Draft status." : "Review demand, availability, procurement and delivery progress."} back={() => navigate({ to: "/$", params: { _splat: "sales-orders" } })} actions={<>{!isNew && <Button variant="outline" onClick={() => navigate({ to: "/$", params: { _splat: "audit-logs" }, search: { module: "SalesOrder", recordId: form.reference || form.number || id } })}><FileClock />Logs</Button>}{!isReadonly && <Button onClick={save} disabled={busy}><Save />{busy ? "Saving..." : "Save"}</Button>}<Button variant="outline" disabled={!isNew && status !== "Draft"} onClick={confirm}><Check />Confirm</Button>{!isNew && status !== "Draft" && status !== "Cancelled" && <Button onClick={deliver}>Deliver</Button>}{!isNew && status !== "Cancelled" && <Button variant="destructive" onClick={cancel}>Cancel</Button>}</>} />
+  return <><div className="mb-5 rounded-lg border border-border bg-card shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4"><div><p className="text-sm font-semibold text-muted-foreground">Sales Order</p><h1 className="mt-1 text-2xl font-bold">{isNew ? "New Sale Order" : String(form.reference || form.number || "Sale Order")}</h1></div><div className="flex flex-wrap items-center gap-2"><Button variant="outline" onClick={() => navigate({ to: "/$", params: { _splat: "sales-orders" } })}>Back</Button><Button variant="outline" disabled={!canConfirm} onClick={confirm}><Check />Confirm</Button>{canDeliver && <Button onClick={deliver}>{deliveryMode ? "Post Delivery" : "Deliver"}</Button>}{canCancel && <Button variant="destructive" onClick={cancel}>Cancel</Button>}{!isReadonly && <Button onClick={save} disabled={busy}><Save />{busy ? "Saving..." : "Save"}</Button>}<Button variant="outline" onClick={openLogs}><FileClock />Logs</Button></div></div><div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"><div className="rounded-md border border-dashed border-border px-3 py-1.5 font-semibold">{nextReference || "SO Auto"}</div><StatusPill value={displayStatus} /></div></div>
     <div className="grid gap-5">
-      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-5 flex items-center justify-between"><h2 className="font-semibold">General Information</h2><StatusPill value={displayStatus} /></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-5 flex items-center justify-between"><h2 className="font-semibold">General Information</h2></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Field label="SO Reference"><input disabled className={inputClass} value={nextReference} /></Field>
         <Field label="Customer" required><select required disabled={isReadonly} className={inputClass} value={String(form.customerId || "")} onChange={(e) => set("customerId", e.target.value)}><option value="">Select customer</option>{customers.map((c) => <option key={String(c.id)} value={String(c.id)}>{String(c.name)}</option>)}</select></Field>
         <Field label="Creation Date" required><input required disabled={!isNew} type="date" className={inputClass} value={dateInputValue(form.date, today)} onChange={(e) => set("date", e.target.value)} /></Field>
@@ -231,7 +310,7 @@ function SalesOrderForm({ id }: { id?: string }) {
         <Field label="Sales Person" required><select required disabled={isReadonly} className={inputClass} value={String(form.salespersonName || "")} onChange={(e) => set("salespersonName", e.target.value)}><option value="">Select user</option>{users.map((u) => <option key={String(u.id)} value={String(u.name)}>{String(u.name)} - {String(u.role)}</option>)}</select></Field>
         <Field label="Reference / Notes"><input disabled={isReadonly} className={inputClass} value={String(form.notes || "")} onChange={(e) => set("notes", e.target.value)} maxLength={300} /></Field>
       </div></section>
-      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">Products</h2>{!isReadonly && <Button type="button" variant="outline" size="sm" onClick={addLine}>Add a product</Button>}</div>{!lines.length ? <div className="rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">Add at least one product line.</div> : <div className="overflow-x-auto"><table className="w-full min-w-[1060px] text-sm"><thead><tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground"><th className="px-3 py-2">Products</th><th className="px-3 py-2">Availability</th><th className="px-3 py-2">Ordered Quantity</th><th className="px-3 py-2">Delivered Quantity</th><th className="px-3 py-2">Units</th><th className="px-3 py-2">Sales Unit Price</th><th className="px-3 py-2">Total</th><th className="px-3 py-2"></th></tr></thead><tbody>{lines.map((line, index) => { const lineTotal = Number(line.qty || 0) * Number(line.unitPrice || 0); const shortage = Number(line.qty || 0) > Number(line.availability || 0); return <tr key={index} className="border-b border-border align-top"><td className="px-3 py-3"><select aria-label="Product" required disabled={isReadonly} className={inputClass} value={String(line.productId || "")} onChange={(e) => updateLine(index, "productId", e.target.value)}><option value="">Select product</option>{products.map((p) => <option key={String(p.id)} value={String(p.id)}>{String(p.name)} - {String(p.sku)}</option>)}</select></td><td className="px-3 py-3"><div className={`flex h-10 items-center rounded-md border px-3 ${shortage ? "border-amber-300 bg-amber-50 text-amber-700" : "border-input bg-background"}`}>{String(line.availability ?? 0)}</div></td><td className="px-3 py-3"><input required disabled={isReadonly} aria-label="Ordered Quantity" type="number" min={1} className={inputClass} value={String(line.qty || 1)} onChange={(e) => updateLine(index, "qty", e.target.value)} /></td><td className="px-3 py-3">{deliveryMode ? <input aria-label="Deliver Quantity" type="number" min={0} max={Number(line.qty || 0) - Number(line.deliveredQty || 0)} className={inputClass} value={String(line.deliveryQty || 0)} onChange={(e) => updateLine(index, "deliveryQty", e.target.value)} /> : <input disabled className={inputClass} value={String(line.deliveredQty || 0)} />}</td><td className="px-3 py-3"><input disabled className={inputClass} value={String(line.units || "Units")} /></td><td className="px-3 py-3"><input required disabled={isReadonly} aria-label="Sales Unit Price" type="number" min={1} className={inputClass} value={String(line.unitPrice || 0)} onChange={(e) => updateLine(index, "unitPrice", e.target.value)} /></td><td className="px-3 py-3"><div className="flex h-10 items-center rounded-md border border-input bg-background px-3 font-semibold">INR {lineTotal.toLocaleString("en-IN")}</div></td><td className="px-3 py-3">{!isReadonly && <Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)}><Trash2 className="text-destructive" /></Button>}</td></tr> })}</tbody></table></div>}</section>
+      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">Products</h2>{!isReadonly && <Button type="button" variant="outline" size="sm" onClick={addLine}>Add a product</Button>}</div>{!lines.length ? <div className="rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">Add at least one product line.</div> : <div className="overflow-x-auto"><table className="w-full min-w-[1060px] text-sm"><thead><tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground"><th className="px-3 py-2">Products</th><th className="px-3 py-2">Availability</th><th className="px-3 py-2">Ordered Quantity</th><th className="px-3 py-2">Delivered Quantity</th><th className="px-3 py-2">Units</th><th className="px-3 py-2">Sales Unit Price</th><th className="px-3 py-2">Total</th><th className="px-3 py-2"></th></tr></thead><tbody>{lines.map((line, index) => { const lineTotal = Number(line.qty || 0) * Number(line.unitPrice || 0); const shortage = Number(line.qty || 0) > Number(line.availability || 0); return <tr key={index} className="border-b border-border align-top"><td className="px-3 py-3"><select aria-label="Product" required disabled={isReadonly} className={inputClass} value={String(line.productId || "")} onChange={(e) => updateLine(index, "productId", e.target.value)}><option value="">Select product</option>{products.map((p) => <option key={String(p.id)} value={String(p.id)}>{String(p.name)} - {String(p.sku)}</option>)}</select></td><td className="px-3 py-3"><div className={`flex h-10 items-center rounded-md border px-3 ${shortage ? "border-amber-300 bg-amber-50 text-amber-700" : "border-input bg-background"}`}>{String(line.availability ?? 0)}</div></td><td className="px-3 py-3"><input required disabled={isReadonly} aria-label="Ordered Quantity" type="number" min={1} placeholder="Qty" className={inputClass} value={String(line.qty ?? "")} onChange={(e) => updateLine(index, "qty", e.target.value)} /></td><td className="px-3 py-3">{deliveryMode ? <input aria-label="Deliver Quantity" type="number" min={0} max={Number(line.qty || 0) - Number(line.deliveredQty || 0)} className={inputClass} value={String(line.deliveryQty ?? "")} onChange={(e) => updateLine(index, "deliveryQty", e.target.value)} /> : <input disabled className={inputClass} value={String(line.deliveredQty ?? 0)} />}</td><td className="px-3 py-3"><input disabled className={inputClass} value={String(line.units || "Units")} /></td><td className="px-3 py-3"><input required disabled={isReadonly} aria-label="Sales Unit Price" type="number" min={1} className={inputClass} value={String(line.unitPrice ?? "")} onChange={(e) => updateLine(index, "unitPrice", e.target.value)} /></td><td className="px-3 py-3"><div className="flex h-10 items-center rounded-md border border-input bg-background px-3 font-semibold">INR {lineTotal.toLocaleString("en-IN")}</div></td><td className="px-3 py-3">{!isReadonly && <Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)}><Trash2 className="text-destructive" /></Button>}</td></tr> })}</tbody></table></div>}</section>
       {Boolean(procurementActions.length) && <section className="rounded-lg border border-border bg-card p-5"><h2 className="mb-4 font-semibold">Procurement Result</h2><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{procurementActions.map((action, index) => <div key={index} className="rounded-md border border-border p-4"><p className="font-semibold">{String(action.productName)}</p><p className="mt-2 text-sm text-muted-foreground">Required Qty: {String(action.ordered)}</p><p className="text-sm text-muted-foreground">In Stock: {String(action.available)}</p><p className="text-sm text-muted-foreground">Shortage: {String(action.shortage)}</p><p className="mt-2 text-sm font-medium">{String(action.action)}</p></div>)}</div></section>}
       <section className="flex justify-end rounded-lg border border-border bg-card p-5"><div className="text-right"><p className="text-sm text-muted-foreground">Total Amount</p><p className="text-2xl font-bold">INR {total.toLocaleString("en-IN")}</p></div></section>
     </div></>;
@@ -240,6 +319,7 @@ function PurchaseOrderForm({ id }: { id?: string }) {
   const navigate = useNavigate();
   const isNew = !id || id === "new";
   const [busy, setBusy] = useState(false);
+  const [receiveMode, setReceiveMode] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const [form, setForm] = useState<Row>({ vendorId: "", date: today, expectedDate: today, responsiblePerson: "", status: "Draft", lines: [] });
   const { data: purchaseOrdersData } = useApiData(() => api.purchaseOrders.list(), []);
@@ -249,16 +329,26 @@ function PurchaseOrderForm({ id }: { id?: string }) {
   const { loading, error, reload } = useApiData(async () => {
     if (isNew) return null;
     const result = await api.purchaseOrders.get<Row>(String(id));
-    setForm((prev) => ({ ...prev, ...result, responsiblePerson: result.purchasePersonName || result.responsiblePerson || "", lines: (result.lines as Row[]) || [] }));
+    const received = (result.receivedQty || {}) as Row;
+    setForm((prev) => ({ ...prev, ...result, responsiblePerson: result.purchasePersonName || result.responsiblePerson || "", lines: ((result.lines as Row[]) || []).map((line) => {
+      const receivedQty = Number(received[String(line.productId)] || 0);
+      return { ...line, receivedQty, receiveQty: Math.max(0, Number(line.qty || 0) - receivedQty), units: "Units" };
+    }) }));
     return result;
-  }, [id]);
+  }, [id, productsData]);
   const vendors = unwrapRows(vendorsData);
   const products = unwrapRows(productsData);
   const users = unwrapRows(usersData);
   const nextReference = isNew ? `PO-${3001 + unwrapRows(purchaseOrdersData).length}` : String(form.reference || form.number || "");
   const vendor = vendors.find((v) => String(v.id) === String(form.vendorId));
   const lines = ((form.lines || []) as Row[]);
-  const total = lines.reduce((sum, line) => sum + Number(line.qty || 0) * Number(line.unitPrice || 0), 0);
+  const status = String(form.status || "Draft");
+  const displayStatus = isLateRow(form) ? "Late" : status;
+  const receivedStatuses = ["Partially Received", "Partially_Received", "Fully Received", "Fully_Received", "Received"];
+  const total = lines.reduce((sum, line) => {
+    const quantity = receivedStatuses.includes(status) ? Number(line.receivedQty || 0) : Number(line.qty || 0);
+    return sum + quantity * Number(line.unitPrice || 0);
+  }, 0);
   const set = (key: string, value: unknown) => setForm((prev) => ({ ...prev, [key]: value }));
   const updateLine = (index: number, key: string, value: unknown) => set("lines", lines.map((line, i) => {
     if (i !== index) return line;
@@ -266,49 +356,86 @@ function PurchaseOrderForm({ id }: { id?: string }) {
     if (key === "productId") {
       const product = products.find((p) => String(p.id) === String(value));
       next.unitPrice = Number(product?.costPrice || 0);
+      next.units = "Units";
     }
     return next;
   }));
-  const addLine = () => set("lines", [...lines, { productId: "", qty: "", receivedQty: 0, unitPrice: "" }]);
+  const isReadonly = !isNew && status !== "Draft";
+  const addLine = () => set("lines", [...lines, { productId: "", qty: "", receivedQty: 0, receiveQty: "", units: "Units", unitPrice: "" }]);
   const removeLine = (index: number) => set("lines", lines.filter((_, i) => i !== index));
-  const save = async () => {
-    if (!form.vendorId) { toast.error("Vendor is required"); return; }
-    if (!lines.length || lines.some((line) => !line.productId || Number(line.qty) <= 0)) { toast.error("Add at least one product with ordered quantity"); return; }
-    const payload = {
+  const validate = () => {
+    if (!form.vendorId) return "Vendor is required";
+    if (!form.date) return "Creation date is required";
+    if (!form.responsiblePerson) return "Responsible Person is required";
+    if (!form.status) return "Status is required";
+    if (!lines.length) return "Add at least one product line";
+    if (lines.some((line) => !line.productId)) return "Product is required on every line";
+    if (lines.some((line) => Number(line.qty || 0) <= 0)) return "Ordered quantity must be greater than zero on every line";
+    if (lines.some((line) => Number(line.unitPrice || 0) <= 0)) return "Cost unit price must be greater than zero on every line";
+    return "";
+  };
+  const payload = () => ({
       vendorId: form.vendorId,
       date: form.date || today,
       expectedDate: form.expectedDate || form.date || today,
       responsiblePerson: form.responsiblePerson,
       lines: lines.map((line) => ({ productId: line.productId, qty: Number(line.qty || 0), unitPrice: Number(line.unitPrice || 0) })),
-    };
+    });
+  const save = async () => {
+    const message = validate();
+    if (message) { toast.error(message); return null; }
     setBusy(true);
     try {
-      const result = isNew ? await api.purchaseOrders.create<Row>(payload) : await api.purchaseOrders.update<Row>(String(id), payload);
+      const result = isNew ? await api.purchaseOrders.create<Row>(payload()) : await api.purchaseOrders.update<Row>(String(id), payload());
       toast.success("Purchase Order saved");
       navigate({ to: "/$", params: { _splat: `purchase-orders/${result.id || id}` }, replace: true });
+      return result;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Save failed");
+      return null;
     } finally {
       setBusy(false);
     }
   };
-  const action = async (name: string) => {
-    try { await api.purchaseOrders.action(String(id), name); toast.success(`${name} completed`); reload(); }
+  const confirm = async () => {
+    const message = validate();
+    if (message) { toast.error(`Cannot confirm: ${message}`); return; }
+    try {
+      const target = isNew ? await save() : { id };
+      if (!target?.id) return;
+      await api.purchaseOrders.action(String(target.id), "confirm");
+      toast.success("Purchase order confirmed");
+      reload();
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Confirm failed"); }
+  };
+  const receive = async () => {
+    if (!receiveMode) { setReceiveMode(true); toast.info("Enter received quantities, then click Receive again"); return; }
+    const qtyMap = Object.fromEntries(lines.map((line) => [String(line.productId), Math.min(Number(line.receiveQty || 0), Math.max(0, Number(line.qty || 0) - Number(line.receivedQty || 0)))]));
+    if (Object.values(qtyMap).every((qty) => Number(qty) <= 0)) { toast.error("Enter at least one received quantity"); return; }
+    try { await api.purchaseOrders.action(String(id), "receive", { qtyMap }); toast.success("Receipt posted"); setReceiveMode(false); reload(); }
+    catch (err) { toast.error(err instanceof Error ? err.message : "Receipt failed"); }
+  };
+  const cancel = async () => {
+    try { await api.purchaseOrders.action(String(id), "cancel"); toast.success("Purchase order cancelled"); reload(); }
     catch (err) { toast.error(err instanceof Error ? err.message : "Action failed"); }
   };
+  const openLogs = () => navigate({ to: "/$", params: { _splat: "audit-logs" }, search: { module: "PurchaseOrder", recordId: form.reference || form.number || id || nextReference } });
+  const canConfirm = isNew || status === "Draft";
+  const canReceive = !isNew && ["Confirmed", "Partially Received", "Partially_Received"].includes(status);
+  const canCancel = !isNew && !["Cancelled", "Fully Received", "Fully_Received", "Received"].includes(status);
   if (loading && !isNew) return <StatePanel type="loading" />;
   if (error) return <StatePanel type="error" message={error} retry={reload} />;
-  return <><PageHeader title={isNew ? "New Purchase Order" : String(form.reference || form.number || "Purchase Order")} description={isNew ? "Create a database-backed purchase order in Draft status." : "Review vendor procurement, receipt progress and cost totals."} back={() => navigate({ to: "/$", params: { _splat: "purchase-orders" } })} actions={<><Button onClick={save} disabled={busy}><Save />{busy ? "Saving..." : "Save"}</Button>{!isNew && <><Button variant="outline" onClick={() => action("confirm")}><Check />Confirm</Button><Button onClick={() => action("receive")}>Receive</Button><Button variant="destructive" onClick={() => action("cancel")}>Cancel</Button><Button variant="outline" onClick={() => navigate({ to: "/$", params: { _splat: "audit-logs" }, search: { module: "PurchaseOrder", recordId: form.reference || form.number || id } })}><FileClock />Logs</Button></>}</>} />
+  return <><div className="mb-5 rounded-lg border border-border bg-card shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4"><div><p className="text-sm font-semibold text-muted-foreground">Purchase Order</p><h1 className="mt-1 text-2xl font-bold">{isNew ? "New Purchase Order" : String(form.reference || form.number || "Purchase Order")}</h1></div><div className="flex flex-wrap items-center gap-2"><Button variant="outline" onClick={() => navigate({ to: "/$", params: { _splat: "purchase-orders" } })}>Back</Button><Button variant="outline" disabled={!canConfirm} onClick={confirm}><Check />Confirm</Button>{canReceive && <Button onClick={receive}>{receiveMode ? "Post Receipt" : "Receive"}</Button>}{canCancel && <Button variant="destructive" onClick={cancel}>Cancel</Button>}{!isReadonly && <Button onClick={save} disabled={busy}><Save />{busy ? "Saving..." : "Save"}</Button>}<Button variant="outline" onClick={openLogs}><FileClock />Logs</Button></div></div><div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"><div className="rounded-md border border-dashed border-border px-3 py-1.5 font-semibold">{nextReference || "PO Auto"}</div><StatusPill value={displayStatus} /></div></div>
     <div className="grid gap-5">
       <section className="rounded-lg border border-border bg-card p-5"><h2 className="mb-5 font-semibold">General Information</h2><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Field label="PO Reference"><input disabled className={inputClass} value={nextReference} /></Field>
-        <Field label="Vendor" required><select className={inputClass} value={String(form.vendorId || "")} onChange={(e) => set("vendorId", e.target.value)}><option value="">Select vendor</option>{vendors.map((v) => <option key={String(v.id)} value={String(v.id)}>{String(v.name)}</option>)}</select></Field>
+        <Field label="Vendor" required><select disabled={isReadonly} className={inputClass} value={String(form.vendorId || "")} onChange={(e) => set("vendorId", e.target.value)}><option value="">Select vendor</option>{vendors.map((v) => <option key={String(v.id)} value={String(v.id)}>{String(v.name)}</option>)}</select></Field>
         <Field label="Vendor Address"><input disabled className={inputClass} value={String(vendor?.address || "")} /></Field>
-        <Field label="Creation Date"><input type="date" className={inputClass} value={String(form.date || today)} onChange={(e) => set("date", e.target.value)} /></Field>
-        <Field label="Responsible Person"><select className={inputClass} value={String(form.responsiblePerson || "")} onChange={(e) => set("responsiblePerson", e.target.value)}><option value="">Select user</option>{users.map((u) => <option key={String(u.id)} value={String(u.name)}>{String(u.name)} - {String(u.role)}</option>)}</select></Field>
-        <Field label="Status"><select disabled={isNew} className={inputClass} value={isNew ? "Draft" : String(form.status || "Draft")} onChange={(e) => set("status", e.target.value)}><option>Draft</option><option>Confirmed</option><option>Partially Received</option><option>Received</option><option>Cancelled</option></select></Field>
+        <Field label="Creation Date" required><input required disabled={!isNew} type="date" className={inputClass} value={dateInputValue(form.date, today)} onChange={(e) => set("date", e.target.value)} /></Field>
+        <Field label="Responsible Person" required><select required disabled={isReadonly} className={inputClass} value={String(form.responsiblePerson || "")} onChange={(e) => set("responsiblePerson", e.target.value)}><option value="">Select user</option>{users.map((u) => <option key={String(u.id)} value={String(u.name)}>{String(u.name)} - {String(u.role)}</option>)}</select></Field>
+        <Field label="Status"><input disabled className={inputClass} value={isNew ? "Draft" : String(form.status || "Draft")} /></Field>
       </div></section>
-      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">Products</h2><Button type="button" variant="outline" size="sm" onClick={addLine}>Add line</Button></div>{!lines.length ? <div className="rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">Add at least one product line.</div> : <div className="grid gap-3">{lines.map((line, index) => { const lineTotal = Number(line.qty || 0) * Number(line.unitPrice || 0); return <div key={index} className="grid gap-2 rounded-md bg-muted p-3 lg:grid-cols-[2fr_1fr_1fr_1fr_1fr_40px]"><select aria-label="Product" className={inputClass} value={String(line.productId || "")} onChange={(e) => updateLine(index, "productId", e.target.value)}><option value="">Select product</option>{products.map((p) => <option key={String(p.id)} value={String(p.id)}>{String(p.name)} - {String(p.sku)}</option>)}</select><input aria-label="Ordered Quantity" placeholder="Ordered quantity" type="number" min={1} className={inputClass} value={String(line.qty ?? "")} onChange={(e) => updateLine(index, "qty", e.target.value)} /><input aria-label="Received Quantity" placeholder="Received quantity" type="number" min={0} className={inputClass} value={String(line.receivedQty ?? 0)} disabled /><input aria-label="Cost Price" placeholder="Cost price" type="number" min={0} className={inputClass} value={String(line.unitPrice ?? "")} onChange={(e) => updateLine(index, "unitPrice", e.target.value)} /><div className="flex h-10 items-center rounded-md border border-input bg-background px-3 text-sm font-semibold">INR {lineTotal.toLocaleString("en-IN")}</div><Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)}><Trash2 className="text-destructive" /></Button></div>})}</div>}</section>
+      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-4 flex items-center justify-between"><h2 className="font-semibold">Products</h2>{!isReadonly && <Button type="button" variant="outline" size="sm" onClick={addLine}>Add a product</Button>}</div>{!lines.length ? <div className="rounded-md border border-dashed border-border p-8 text-center text-sm text-muted-foreground">Add at least one product line.</div> : <div className="overflow-x-auto"><table className="w-full min-w-[1040px] text-sm"><thead><tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground"><th className="px-3 py-2">Products</th><th className="px-3 py-2">Ordered Quantity</th><th className="px-3 py-2">Received Quantity</th><th className="px-3 py-2">Units</th><th className="px-3 py-2">Cost Unit Price</th><th className="px-3 py-2">Total</th><th className="px-3 py-2"></th></tr></thead><tbody>{lines.map((line, index) => { const qtyForTotal = receivedStatuses.includes(status) ? Number(line.receivedQty || 0) : Number(line.qty || 0); const lineTotal = qtyForTotal * Number(line.unitPrice || 0); const remaining = Math.max(0, Number(line.qty || 0) - Number(line.receivedQty || 0)); return <tr key={index} className="border-b border-border align-top"><td className="px-3 py-3"><select aria-label="Product" required disabled={isReadonly} className={inputClass} value={String(line.productId || "")} onChange={(e) => updateLine(index, "productId", e.target.value)}><option value="">Select product</option>{products.map((p) => <option key={String(p.id)} value={String(p.id)}>{String(p.name)} - {String(p.sku)}</option>)}</select></td><td className="px-3 py-3"><input aria-label="Ordered Quantity" required disabled={isReadonly} placeholder="Ordered quantity" type="number" min={1} className={inputClass} value={String(line.qty ?? "")} onChange={(e) => updateLine(index, "qty", e.target.value)} /></td><td className="px-3 py-3">{receiveMode ? <input aria-label="Receive Quantity" placeholder={`Remaining ${remaining}`} type="number" min={0} max={remaining} className={inputClass} value={String(line.receiveQty ?? "")} onChange={(e) => updateLine(index, "receiveQty", e.target.value)} /> : <input aria-label="Received Quantity" type="number" min={0} className={inputClass} value={String(line.receivedQty ?? 0)} disabled />}</td><td className="px-3 py-3"><input disabled className={inputClass} value={String(line.units || "Units")} /></td><td className="px-3 py-3"><input aria-label="Cost Price" required disabled={isReadonly} placeholder="Cost price" type="number" min={1} className={inputClass} value={String(line.unitPrice ?? "")} onChange={(e) => updateLine(index, "unitPrice", e.target.value)} /></td><td className="px-3 py-3"><div className="flex h-10 items-center rounded-md border border-input bg-background px-3 text-sm font-semibold">INR {lineTotal.toLocaleString("en-IN")}</div></td><td className="px-3 py-3">{!isReadonly && <Button type="button" variant="ghost" size="icon" onClick={() => removeLine(index)}><Trash2 className="text-destructive" /></Button>}</td></tr>})}</tbody></table></div>}</section>
       <section className="flex justify-end rounded-lg border border-border bg-card p-5"><div className="text-right"><p className="text-sm text-muted-foreground">Total Amount</p><p className="text-2xl font-bold">INR {total.toLocaleString("en-IN")}</p></div></section>
     </div></>;
 }
@@ -341,6 +468,11 @@ function ManufacturingOrderForm({ id }: { id?: string }) {
   const isDraft = status === "Draft";
   const isLocked = ["Done", "Cancelled"].includes(status);
   const headerLocked = !isNew && !isDraft;
+  const openLogs = () => navigate({ to: "/$", params: { _splat: "audit-logs" }, search: { module: "ManufacturingOrder", recordId: form.reference || form.number || id || nextReference } });
+  const canConfirm = isNew || isDraft;
+  const canStart = !isNew && status === "Confirmed";
+  const canProduce = !isNew && ["Confirmed", "In Progress", "In_Progress"].includes(status);
+  const canCancel = !isNew && !isLocked;
   const set = (key: string, value: unknown) => setForm((prev) => ({ ...prev, [key]: value }));
   const componentRows = ((form.components as Row[])?.length ? form.components as Row[] : ((selectedBom?.components as Row[]) || []).map((component) => {
     const product = products.find((p) => String(p.id) === String(component.productId));
@@ -352,6 +484,7 @@ function ManufacturingOrderForm({ id }: { id?: string }) {
   const validate = () => {
     if (!form.productId) return "Finished product is required";
     if (!Number.isFinite(qty) || qty <= 0) return "Quantity must be greater than zero";
+    if (!form.scheduledDate) return "Schedule Date is required";
     if (!form.assignee) return "Assignee is required";
     if (!form.bomId) return "Bill of Materials is required";
     return "";
@@ -370,6 +503,10 @@ function ManufacturingOrderForm({ id }: { id?: string }) {
     finally { setBusy(false); }
   };
   const action = async (name: "confirm" | "start" | "produce" | "cancel") => {
+    if (name === "confirm") {
+      const message = validate();
+      if (message) { toast.error(`Cannot confirm: ${message}`); return; }
+    }
     try {
       const target = isNew ? await save() : { id };
       if (!target?.id) return;
@@ -380,12 +517,12 @@ function ManufacturingOrderForm({ id }: { id?: string }) {
   };
   if (loading && !isNew) return <StatePanel type="loading" />;
   if (error) return <StatePanel type="error" message={error} retry={reload} />;
-  return <><PageHeader title={isNew ? "New Manufacturing Order" : nextReference} description={isNew ? "Create a manufacturing order in Draft status." : "Review components, operations and production progress."} back={() => navigate({ to: "/$", params: { _splat: "manufacturing-orders" } })} actions={<>{!isNew && <Button variant="outline" onClick={() => navigate({ to: "/$", params: { _splat: "audit-logs" }, search: { module: "ManufacturingOrder", recordId: form.reference || form.number || id } })}><FileClock />Logs</Button>}{!isLocked && isDraft && <Button onClick={save} disabled={busy}><Save />{busy ? "Saving..." : "Save"}</Button>}<Button variant="outline" disabled={!isNew && !isDraft} onClick={() => action("confirm")}><Check />Confirm</Button>{!isNew && status === "Confirmed" && <Button variant="outline" onClick={() => action("start")}><TimerReset />Start</Button>}{!isNew && ["Confirmed", "In Progress"].includes(status) && <Button onClick={() => action("produce")}><PackageCheck />Produce</Button>}{!isNew && !isLocked && <Button variant="destructive" onClick={() => action("cancel")}>Cancel</Button>}</>} />
+  return <><div className="mb-5 rounded-lg border border-border bg-card shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4"><div><p className="text-sm font-semibold text-muted-foreground">Manufacturing Order</p><h1 className="mt-1 text-2xl font-bold">{isNew ? "New Manufacturing Order" : nextReference}</h1></div><div className="flex flex-wrap items-center gap-2"><Button variant="outline" disabled={!canConfirm} onClick={() => action("confirm")}><Check />Confirm</Button>{canProduce && <Button onClick={() => action("produce")}><PackageCheck />Produce</Button>}{canStart && <Button variant="outline" onClick={() => action("start")}><TimerReset />Start</Button>}{canCancel && <Button variant="destructive" onClick={() => action("cancel")}>Cancel</Button>}<Button variant="outline" onClick={() => navigate({ to: "/$", params: { _splat: "manufacturing-orders" } })}>Back</Button>{!isLocked && isDraft && <Button onClick={save} disabled={busy}><Save />{busy ? "Saving..." : "Save"}</Button>}<Button variant="outline" onClick={openLogs}><FileClock />Logs</Button></div></div><div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"><div className="rounded-md border border-dashed border-border px-3 py-1.5 font-semibold">{nextReference || "MO Auto"}</div><StatusPill value={status} /></div></div>
     <div className="grid gap-5">
-      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-5 flex items-center justify-between"><h2 className="font-semibold">General Information</h2><StatusPill value={status} /></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      <section className="rounded-lg border border-border bg-card p-5"><div className="mb-5 flex items-center justify-between"><h2 className="font-semibold">General Information</h2></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Field label="MO Reference"><input disabled className={inputClass} value={nextReference} /></Field>
         <Field label="Finished Product" required><select required disabled={headerLocked || isLocked} className={inputClass} value={String(form.productId || "")} onChange={(e) => { set("productId", e.target.value); set("bomId", ""); set("components", []); set("workOrders", []); }}><option value="">Select finished product</option>{products.map((p) => <option key={String(p.id)} value={String(p.id)}>{String(p.name)} - {String(p.sku)}</option>)}</select></Field>
-        <Field label="Schedule Date"><input disabled type="date" className={inputClass} value={dateInputValue(form.scheduledDate, today)} /></Field>
+        <Field label="Schedule Date" required><input required disabled={headerLocked || isLocked} type="date" className={inputClass} value={dateInputValue(form.scheduledDate, today)} onChange={(e) => set("scheduledDate", e.target.value)} /></Field>
         <Field label="Quantity" required><input required disabled={headerLocked || isLocked} type="number" min={1} className={inputClass} value={String(qty)} onChange={(e) => { set("qty", e.target.value); set("components", []); set("workOrders", []); }} /></Field>
         <Field label="Bill of Materials" required><select required disabled={headerLocked || isLocked || !form.productId} className={inputClass} value={String(form.bomId || "")} onChange={(e) => { set("bomId", e.target.value); set("components", []); set("workOrders", []); }}><option value="">Select BoM</option>{matchingBoms.map((b) => <option key={String(b.id)} value={String(b.id)}>{String(b.name || b.reference)}</option>)}</select></Field>
         <Field label="Assignee" required><select required disabled={isLocked} className={inputClass} value={String(form.assignee || "")} onChange={(e) => set("assignee", e.target.value)}><option value="">Select user</option>{users.map((u) => <option key={String(u.id)} value={String(u.name)}>{String(u.name)} - {String(u.role)}</option>)}</select></Field>
@@ -432,7 +569,45 @@ export function DashboardPage(){
 	 return <><PageHeader title="Operational Dashboard" description="Live demand, procurement, production and stock movement overview."/>
 	  <div className="grid gap-5">{groups.map(g=>{const ModuleIcon=g.Icon;return <section key={g.key} className="rounded-lg border border-border bg-card p-5 shadow-sm"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><div className={`grid size-11 place-items-center rounded-lg border ${g.accent}`}><ModuleIcon className="size-5"/></div><div><h2 className="font-semibold">{g.title}</h2><p className="text-xs text-muted-foreground">Click a status to open filtered records</p></div></div><div className="rounded-full bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground">{g.statuses.reduce((sum,s)=>sum+Number(((d[g.key] as Row)?.[s] as number)??0),0)} total</div></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">{g.statuses.map(s=>{const Icon=statusIcon(s);const count=Number(((d[g.key] as Row)?.[s] as number)??0);return <button key={s} onClick={()=>navigate({to:"/$",params:{_splat:g.path},search:{status:s,scope:"all"}})} className={`group rounded-lg border p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md ${statusColor(s)}`}><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium">{s}</p><p className="mt-3 text-3xl font-bold text-foreground">{count}</p></div><div className="grid size-9 shrink-0 place-items-center rounded-md bg-white/70 text-current shadow-sm"><Icon className="size-4"/></div></div></button>})}</div></section>})}</div></>;
 }
+
+const auditActionKind = (action: string) => {
+  const key = action.toUpperCase();
+  if (key.includes("DELETE") || key.includes("CANCEL") || key.includes("REVOKE")) return "delete";
+  if (key.includes("CREATE") || key.includes("AUTO")) return "create";
+  return "update";
+};
+const normalizeAuditRow = (row: Row) => {
+  const rawAction = String(row.action ?? "").trim();
+  const action = !rawAction || rawAction === "undefined" ? "SYSTEM_EVENT" : rawAction;
+  const module = String(row.module || row.entityType || row.recordType || "System");
+  const recordId = String(row.recordId || row.entityId || "-");
+  return { ...row, action, module, recordType: String(row.recordType || module), recordId, userName: String(row.userName || row.user || "System"), fieldChanged: String(row.fieldChanged || "Action"), oldValue: row.oldValue ?? "-", newValue: row.newValue ?? row.message ?? "-", createdAt: row.createdAt || row.timestamp };
+};
+
+function AuditLogsPage(){
+ const [search,setSearch]=useState("");const [module,setModule]=useState("");const [user,setUser]=useState("");const [action,setAction]=useState("");const [recordId,setRecordId]=useState("");const [from,setFrom]=useState("");const [to,setTo]=useState("");const [page,setPage]=useState(1);const [rowsPerPage,setRowsPerPage]=useState(10);
+ const {data,loading,error,reload}=useApiData(()=>api.audit.logs(),[]);
+ useEffect(()=>{const timer=window.setInterval(reload,10000);return()=>window.clearInterval(timer)},[reload]);
+ const rows=useMemo(()=>unwrapRows(data).map(normalizeAuditRow),[data]);
+ const users=useMemo(()=>Array.from(new Set(rows.map(row=>String(row.userName)).filter(Boolean))).sort(),[rows]);
+ const modules=useMemo(()=>Array.from(new Set(rows.map(row=>String(row.module)).filter(Boolean))).sort(),[rows]);
+ const actions=useMemo(()=>Array.from(new Set(rows.map(row=>String(row.action)).filter(Boolean))).sort(),[rows]);
+ const filteredRows=useMemo(()=>rows.filter(row=>{const haystack=[row.createdAt,row.userName,row.module,row.recordType,row.recordId,row.action,row.fieldChanged,row.oldValue,row.newValue,row.message].map(value=>String(value??"").toLowerCase()).join(" ");const created=row.createdAt?new Date(String(row.createdAt)):null;return(!search||haystack.includes(search.toLowerCase()))&&(!module||String(row.module)===module)&&(!user||String(row.userName)===user)&&(!action||String(row.action)===action)&&(!recordId||String(row.recordId).toLowerCase().includes(recordId.toLowerCase()))&&(!from||(created&&created>=new Date(from)))&&(!to||(created&&created<=new Date(`${to}T23:59:59`)))}),[rows,search,module,user,action,recordId,from,to]);
+ const pageRows=pageSlice(filteredRows,page,rowsPerPage);useEffect(()=>setPage(1),[search,module,user,action,recordId,from,to,rowsPerPage]);
+ const counts=useMemo(()=>({total:filteredRows.length,create:filteredRows.filter(row=>auditActionKind(String(row.action))==="create").length,update:filteredRows.filter(row=>auditActionKind(String(row.action))==="update").length,delete:filteredRows.filter(row=>auditActionKind(String(row.action))==="delete").length}),[filteredRows]);
+ const maxCount=Math.max(counts.create,counts.update,counts.delete,1);
+ const reset=()=>{setSearch("");setModule("");setUser("");setAction("");setRecordId("");setFrom("");setTo("")};
+ const exportCsv=()=>{const headers=["Date & Time","User","Module","Record Type","Record ID","Action","Field Changed","Old Value","New Value"];const lines=filteredRows.map(row=>[row.createdAt,row.userName,row.module,row.recordType,row.recordId,row.action,row.fieldChanged,row.oldValue,row.newValue].map(value=>`"${String(value??"").replaceAll('"','""')}"`).join(","));const blob=new Blob([[headers.join(","),...lines].join("\n")],{type:"text/csv;charset=utf-8"});const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download=`flowforge-audit-logs-${new Date().toISOString().slice(0,10)}.csv`;link.click();URL.revokeObjectURL(url)};
+ if(loading)return <StatePanel type="loading"/>;if(error)return <><PageHeader title="Audit Logs"/><StatePanel type="error" message={error} retry={reload}/></>;
+ return <><div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><div className="mb-3 flex items-center gap-2 text-sm text-muted-foreground"><span>Administration</span><span>/</span><span className="font-semibold text-foreground">Audit Logs</span></div><h1 className="text-2xl font-bold">Audit Logs</h1><p className="mt-1 text-muted-foreground">System-wide traceability and compliance monitoring.</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={exportCsv}>Export CSV</Button><Button onClick={reload}><RefreshCw/>Refresh Logs</Button></div></div>
+  <div className="mb-5 grid gap-4 md:grid-cols-4">{[["Total Logs",counts.total,"border-l-primary","bg-primary"],["Create Actions",counts.create,"border-l-emerald-500","bg-emerald-500"],["Update Actions",counts.update,"border-l-amber-500","bg-amber-500"],["Delete Actions",counts.delete,"border-l-rose-600","bg-rose-600"]].map(([label,count,border,bar])=><div key={String(label)} className={`rounded-xl border border-border border-l-4 ${String(border)} bg-card p-5 shadow-sm`}><p className="text-sm text-muted-foreground">{String(label)}</p><p className="mt-2 text-2xl font-bold">{Number(count).toLocaleString("en-IN")}</p>{String(label)==="Total Logs"?<p className="mt-4 text-sm font-semibold text-emerald-700">Live sync every 10s</p>:<div className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted"><div className={`h-full rounded-full ${String(bar)}`} style={{width:`${Math.max(4,Math.round(Number(count)/maxCount*100))}%`}}/></div>}</div>)}</div>
+  <section className="mb-5 rounded-xl border border-border bg-card p-4 shadow-sm"><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[1.2fr_1fr_1fr_1fr_1fr_1fr_auto]"><label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Search<input className={inputClass} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search logs..." /></label><label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Date From<input className={inputClass} type="date" value={from} onChange={e=>setFrom(e.target.value)} /></label><label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Date To<input className={inputClass} type="date" value={to} onChange={e=>setTo(e.target.value)} /></label><label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">User<select className={inputClass} value={user} onChange={e=>setUser(e.target.value)}><option value="">All Users</option>{users.map(value=><option key={value}>{value}</option>)}</select></label><label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Module<select className={inputClass} value={module} onChange={e=>setModule(e.target.value)}><option value="">All Modules</option>{modules.map(value=><option key={value}>{value}</option>)}</select></label><label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Action<select className={inputClass} value={action} onChange={e=>setAction(e.target.value)}><option value="">All Actions</option>{actions.map(value=><option key={value} value={value}>{value.replaceAll("_"," ")}</option>)}</select></label><div className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground"><span>Record ID</span><div className="flex gap-2"><input className={inputClass+" min-w-0"} value={recordId} onChange={e=>setRecordId(e.target.value)} placeholder="ID..." /><Button type="button" variant="outline" onClick={reset}>Reset</Button></div></div></div></section>
+  {!filteredRows.length?<StatePanel type="empty" message="No audit logs match these filters."/>:<section className="overflow-hidden rounded-xl border border-border bg-card shadow-sm"><div className="overflow-x-auto"><table className="w-full min-w-[1120px] text-sm"><thead className="bg-muted/70"><tr className="text-left text-xs uppercase tracking-wider text-muted-foreground"><th className="px-5 py-4">Date & Time</th><th className="px-5 py-4">User</th><th className="px-5 py-4">Module</th><th className="px-5 py-4">Record Type</th><th className="px-5 py-4">Record ID</th><th className="px-5 py-4">Action</th><th className="px-5 py-4">Field</th><th className="px-5 py-4">Old Value</th><th className="px-5 py-4">New Value</th></tr></thead><tbody>{pageRows.map(row=><tr key={String(row.id)} className="border-t border-border align-middle hover:bg-muted/40"><td className="px-5 py-4 font-mono">{row.createdAt?new Date(String(row.createdAt)).toLocaleString():"-"}</td><td className="px-5 py-4"><div className="flex items-center gap-2"><span className="grid size-8 place-items-center rounded-full bg-primary/10 text-xs font-bold text-primary">{String(row.userName).slice(0,2).toUpperCase()}</span><span>{String(row.userName)}</span></div></td><td className="px-5 py-4">{String(row.module)}</td><td className="px-5 py-4">{String(row.recordType)}</td><td className="px-5 py-4 font-mono">{String(row.recordId)}</td><td className="px-5 py-4"><StatusPill value={String(row.action).replaceAll("_"," ")} /></td><td className="px-5 py-4 font-mono italic">{String(row.fieldChanged)}</td><td className="px-5 py-4">{String(row.oldValue??"-")}</td><td className="px-5 py-4">{String(row.newValue??"-")}</td></tr>)}</tbody></table></div><div className="border-t border-border"><PaginationFooter page={page} setPage={setPage} rowsPerPage={rowsPerPage} setRowsPerPage={setRowsPerPage} totalRows={filteredRows.length}/></div></section>}
+  <div className="mt-5 flex flex-wrap justify-between gap-3 border-t border-border py-3 text-xs uppercase tracking-[0.25em] text-muted-foreground"><span className="flex items-center gap-2"><span className="size-2 rounded-full bg-emerald-500"/>System Online</span><span>Syncing: Just Now</span></div></>;
+}
+
 export function LedgerPage({audit=false}:{audit?:boolean}){
+ if(audit)return <AuditLogsPage/>;
  const [search,setSearch]=useState(""); const [page,setPage]=useState(1); const [rowsPerPage,setRowsPerPage]=useState(10); const {data,loading,error,reload}=useApiData(()=>audit?api.audit.logs({search}):api.stock.stockMoves({search}),[search]); const rows=unwrapRows(data); const pageRows=pageSlice(rows,page,rowsPerPage);
  useEffect(()=>setPage(1),[search,audit,rowsPerPage]);
  const cols=audit?[{key:"createdAt",label:"Date & Time"},{key:"userName",label:"User"},{key:"module",label:"Module"},{key:"recordType",label:"Record Type"},{key:"recordId",label:"Record ID"},{key:"action",label:"Action"},{key:"fieldChanged",label:"Field Changed"},{key:"oldValue",label:"Old Value"},{key:"newValue",label:"New Value"}]:[{key:"createdAt",label:"Date & Time"},{key:"productName",label:"Product"},{key:"movementType",label:"Movement Type"},{key:"quantityChange",label:"Quantity Change"},{key:"beforeQty",label:"Before Qty"},{key:"afterQty",label:"After Qty"},{key:"referenceType",label:"Reference Type"},{key:"referenceId",label:"Reference ID"},{key:"userName",label:"User"},{key:"note",label:"Note"}];

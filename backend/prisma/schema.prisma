@@ -262,6 +262,7 @@ model PurchaseOrder {
   vendorId String
   date DateTime
   expectedDate DateTime
+  responsiblePerson String?
   status POStatus @default(Draft)
   source POSource @default(Manual)
   sourceSOId String?
@@ -292,6 +293,7 @@ model ManufacturingOrder {
   assignee String
   assigneeUserId String?
   sourceSOId String?
+  scheduledDate DateTime @default(now())
   status MOStatus @default(Confirmed)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
