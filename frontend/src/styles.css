@@ -151,3 +151,33 @@
   input[type="number"] { -moz-appearance: textfield; }
   button, a, input, select, textarea { outline-color: var(--color-ring); }
 }
+
+@keyframes flow-packet {
+  0% { left: 0%; opacity: 0; transform: translateY(-50%) scale(0.75); }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { left: 100%; opacity: 0; transform: translateY(-50%) scale(1); }
+}
+
+@keyframes flow-line {
+  0% { filter: saturate(0.9); opacity: 0.55; }
+  50% { filter: saturate(1.35); opacity: 1; }
+  100% { filter: saturate(0.9); opacity: 0.55; }
+}
+
+@keyframes flow-live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 35%, transparent); }
+  50% { box-shadow: 0 0 0 7px color-mix(in oklch, var(--primary) 0%, transparent); }
+}
+
+.flow-packet {
+  animation: flow-packet 2.4s linear infinite;
+}
+
+.flow-line {
+  animation: flow-line 1.8s ease-in-out infinite;
+}
+
+.flow-live-dot {
+  animation: flow-live-pulse 1.6s ease-in-out infinite;
+}

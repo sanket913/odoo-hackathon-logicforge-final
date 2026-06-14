@@ -116,9 +116,22 @@ export function manufacturingOrderDto(o) {
 export const stockMoveDto = (m) => m && ({
   id: m.id, date: m.date.toISOString(), createdAt: m.date.toISOString(), productId: m.productId,
   productName: m.product?.name, type: m.type, movementType: m.type, change: m.change, quantityChange: m.change,
+  sku: m.product?.sku, onHandBefore: m.before, onHandAfter: m.after, reservedBefore: m.reservedBefore ?? undefined, reservedAfter: m.reservedAfter ?? undefined,
+  availableBefore: m.availableBefore ?? m.before, availableAfter: m.availableAfter ?? m.after,
   before: m.before, beforeQty: m.before, after: m.after, afterQty: m.after, reference: m.reference,
+  sourceLocation: m.sourceLocation || "Main WH", destinationLocation: m.destinationLocation || locationForMove(m.type),
+  status: "Posted", movementNumber: m.id,
   referenceType: m.referenceType, referenceId: m.referenceId || m.reference, userName: m.user, note: m.note,
 });
+
+const locationForMove = (type = "") => {
+  if (String(type).includes("PURCHASE")) return "Raw Material Store";
+  if (String(type).includes("MO_COMPONENT")) return "Production Floor";
+  if (String(type).includes("MO_FINISHED")) return "Finished Goods Store";
+  if (String(type).includes("SALE")) return "Customer";
+  if (String(type).includes("SCRAP")) return "Scrap Location";
+  return "Main WH";
+};
 
 export const alertDto = (a) => a && ({
   id: a.id,

@@ -32,6 +32,7 @@ app.use("/api/sales-orders", auth, roleGuard("sales-orders"), salesRouter);
 app.use("/api/purchase-orders", auth, roleGuard("purchase-orders"), purchaseRouter);
 app.use("/api/manufacturing-orders", auth, roleGuard("manufacturing-orders"), manufacturingRouter);
 app.use("/api/stock-moves", auth, roleGuard("stock-moves"), stockRouter);
+app.use("/api/inventory-movements", auth, roleGuard("inventory-movements"), stockRouter);
 app.use("/api/audit-logs", auth, roleGuard("audit-logs"), auditRouter);
 app.use("/api/users", auth, roleGuard("users"), usersRouter());
 app.use("/api/erpilot", auth, roleGuard("erpilot"), erpilotRouter);

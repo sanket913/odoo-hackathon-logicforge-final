@@ -15,6 +15,8 @@ export const env = {
     .map((x) => x.trim())
     .filter(Boolean),
   aiProvider: process.env.AI_PROVIDER || "none",
+  enableErpilotAi: String(process.env.ENABLE_ERPILOT_AI ?? "true").toLowerCase() !== "false",
   groqApiKey: process.env.GROQ_API_KEY || "",
   groqModel: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+  groqFallbackModel: process.env.GROQ_FALLBACK_MODEL || "llama-3.1-8b-instant",
 };
