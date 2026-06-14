@@ -214,15 +214,44 @@ function LandingPage() {
         </div>
       </section>
 
-      <section className="bg-[#283044] py-16 text-white">
-        <div className="mx-auto flex max-w-7xl flex-col gap-6 px-5 sm:px-8 lg:flex-row lg:items-center lg:justify-between">
-          <div><h2 className="text-3xl font-bold">Bring every ERP movement into one command center.</h2><p className="mt-2 text-sm text-white/70">Login if you already have access, or create an account to request workspace approval.</p></div>
-          <div className="flex flex-wrap gap-3">
-            <Button asChild size="lg" className="bg-white text-[#283044] hover:bg-[#eef0ff]"><Link to="/login">Login</Link></Button>
-            <Button asChild size="lg" variant="outline" className="border-white/30 bg-white/10 text-white hover:bg-white/20"><Link to="/signup">Create Account</Link></Button>
+      <footer className="border-t border-white/10 bg-[#111827] text-white">
+        <div className="mx-auto grid max-w-7xl gap-10 px-5 py-12 sm:px-8 lg:grid-cols-[1.25fr_0.75fr_0.75fr_0.75fr]">
+          <div>
+            <div className="flex items-center gap-3">
+              <span className="grid size-10 place-items-center rounded-lg bg-[#6063ee] text-white"><GitBranch className="size-5" /></span>
+              <div><p className="text-lg font-bold">FlowForge ERP</p><p className="text-xs uppercase tracking-[0.18em] text-white/45">Shiv Furniture Works</p></div>
+            </div>
+            <p className="mt-5 max-w-sm text-sm leading-7 text-white/65">
+              Demand-to-delivery ERP for sales, procurement, manufacturing, inventory movement, audit traceability and ERPilot AI decision support.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-2">
+              {["Live stock ledger", "Role-aware access", "AI operations"].map((item) => <span key={item} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">{item}</span>)}
+            </div>
+          </div>
+          <FooterColumn title="Product" links={[["Modules", "#modules"], ["Inventory Engine", "#inventory"], ["ERPilot AI", "#erpilot"], ["Demand Flow", "#modules"]]} />
+          <FooterColumn title="Operations" links={[["Products", "#modules"], ["Sales Orders", "#modules"], ["Purchase Orders", "#modules"], ["Manufacturing", "#modules"]]} />
+          <FooterColumn title="Governance" links={[["Audit Logs", "#modules"], ["Traceability", "#inventory"], ["Business Health", "#erpilot"], ["Access Control", "#erpilot"]]} />
+        </div>
+        <div className="border-t border-white/10">
+          <div className="mx-auto flex max-w-7xl flex-col gap-3 px-5 py-5 text-xs text-white/50 sm:px-8 md:flex-row md:items-center md:justify-between">
+            <p>© 2026 FlowForge ERP. Built for connected furniture manufacturing operations.</p>
+            <div className="flex flex-wrap gap-4"><a href="#modules" className="hover:text-white">System Modules</a><a href="#inventory" className="hover:text-white">Inventory Movement</a><a href="#erpilot" className="hover:text-white">ERPilot AI</a></div>
           </div>
         </div>
-      </section>
+      </footer>
     </main>
+  );
+}
+
+function FooterColumn({ title, links }: { title: string; links: readonly (readonly [string, string])[] }) {
+  return (
+    <div>
+      <h3 className="text-sm font-semibold uppercase tracking-[0.16em] text-white/45">{title}</h3>
+      <div className="mt-4 grid gap-3">
+        {links.map(([label, href]) => (
+          <a key={label} href={href} className="text-sm text-white/72 transition hover:text-white">{label}</a>
+        ))}
+      </div>
+    </div>
   );
 }
