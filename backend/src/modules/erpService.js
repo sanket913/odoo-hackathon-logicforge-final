@@ -28,7 +28,7 @@ async function alert(type, severity, title, message, entityType, entityId, actio
   return tx.alert.create({ data: { id: id("alert"), type, severity, title, message, entityType, entityId, actionLink } });
 }
 
-export async function move(productId, type, change, reference, note, tx = prisma, reserveOnly = false) {
+export async function move(productId, type, change, reference, note, tx = prisma, reserveOnly = false, user = undefined) {
   const p = await tx.product.findUnique({ where: { id: productId } });
   if (!p) throw fail(404, "PRODUCT_NOT_FOUND", "Product not found");
   const physicalBefore = p.onHand;
@@ -43,7 +43,7 @@ export async function move(productId, type, change, reference, note, tx = prisma
   const stockMove = await tx.stockMove.create({
     data: {
       id: id("sm"), date: new Date(), productId, type, change: ledgerChange, before, after, reference, note,
-      referenceType: reference.split("-")[0] || "System", referenceId: reference, user: "System",
+      referenceType: reference.split("-")[0] || "System", referenceId: reference, user: user?.name || "System",
     },
   });
   const fresh = await tx.product.findUnique({ where: { id: productId } });
@@ -98,7 +98,7 @@ export async function confirmSalesOrder(soId, user) {
       const free = Math.max(0, product.onHand - product.reserved);
       const reserveQty = Math.min(free, line.qty);
       const shortage = line.qty - reserveQty;
-      if (reserveQty > 0) await move(product.id, "SALE_RESERVE", reserveQty, so.number, `Reserved for ${so.number}`, tx, true);
+      if (reserveQty > 0) await move(product.id, "SALE_RESERVE", reserveQty, so.number, `Reserved for ${so.number}`, tx, true, user);
       if (reserveQty > 0) await tx.inventoryReservation.create({ data: { id: id("res"), productId: product.id, salesOrderId: so.id, qty: reserveQty } });
       const action = { productId: product.id, productName: product.name, ordered: line.qty, available: free, shortage, strategy: product.strategy, procurementType: product.procurementType, action: shortage ? "" : "Reserved from stock. No procurement needed." };
       if (shortage > 0 && product.procureOnDemand) {
@@ -157,7 +157,7 @@ export async function deliverSalesOrder(soId, qtyMap = {}, user) {
       if (requested > p.onHand) throw fail(400, "DELIVERY_EXCEEDS_STOCK", "Delivery quantity exceeds available stock");
       const qty = requested;
       if (qty > 0) {
-        await move(p.id, "SALE_DELIVERY", -qty, so.number, `Delivered for ${so.number}`, tx);
+        await move(p.id, "SALE_DELIVERY", -qty, so.number, `Delivered for ${so.number}`, tx, false, user);
         await tx.product.update({ where: { id: p.id }, data: { reserved: Math.max(0, p.reserved - qty) } });
         await tx.salesOrderLine.update({ where: { id: line.id }, data: { deliveredQty: { increment: qty } } });
       }
@@ -185,7 +185,7 @@ export async function cancelSalesOrder(soId, user) {
           const beforeAvailable = p.onHand - p.reserved;
           await tx.product.update({ where: { id: p.id }, data: { reserved: { decrement: releaseQty } } });
           await tx.inventoryReservation.updateMany({ where: { productId: p.id, salesOrderId: so.id, status: "Active" }, data: { status: "Released", releasedAt: new Date() } });
-          await tx.stockMove.create({ data: { id: id("sm"), date: new Date(), productId: p.id, type: "RESERVATION_RELEASE", change: releaseQty, before: beforeAvailable, after: beforeAvailable + releaseQty, reference: so.number, referenceType: "SO", referenceId: so.id, note: `Released reservation for ${so.number}`, user: user?.name || "System" } });
+          await tx.stockMove.create({ data: { id: id("sm"), date: new Date(), productId: p.id, type: "SALE_UNRESERVE", change: releaseQty, before: beforeAvailable, after: beforeAvailable + releaseQty, reference: so.number, referenceType: "SO", referenceId: so.id, note: `Released reservation for ${so.number}`, user: user?.name || "System" } });
         }
       }
     }
@@ -206,7 +206,7 @@ export async function receivePurchaseOrder(poId, qtyMap = {}, user) {
       if (requested > remaining) throw fail(400, "RECEIPT_EXCEEDS_ORDER", "Receipt quantity exceeds remaining purchase quantity");
       const qty = requested;
       if (qty > 0) {
-        await move(line.productId, "PURCHASE_RECEIPT", qty, po.number, `Received from vendor`, tx);
+        await move(line.productId, "PURCHASE_RECEIPT", qty, po.number, `Received from vendor`, tx, false, user);
         await tx.purchaseOrderLine.update({ where: { id: line.id }, data: { receivedQty: { increment: qty } } });
       }
     }
@@ -232,7 +232,7 @@ export async function startManufacturingOrder(moId, user) {
       if (available < need) shortages.push({ name: p.name, needed: need, available });
     }
     if (shortages.length) throw fail(409, "COMPONENT_SHORTAGE", "Components are insufficient to start manufacturing", shortages);
-    for (const c of mo.bom.components) await move(c.productId, "MO_COMPONENT_RESERVE", c.qty * mo.qty, mo.number, `Reserved for ${mo.number}`, tx, true);
+    for (const c of mo.bom.components) await move(c.productId, "MO_COMPONENT_RESERVE", c.qty * mo.qty, mo.number, `Reserved for ${mo.number}`, tx, true, user);
     const first = mo.workOrders.sort((a, b) => a.sequence - b.sequence)[0];
     if (first) await tx.workOrder.update({ where: { id: first.id }, data: { status: "In_Progress" } });
     const updated = await tx.manufacturingOrder.update({ where: { id: moId }, data: { status: "In_Progress" }, include: includeManufacturing });
@@ -269,9 +269,9 @@ export async function completeManufacturingOrder(moId, user) {
       const need = c.qty * mo.qty;
       const p = await tx.product.findUnique({ where: { id: c.productId } });
       await tx.product.update({ where: { id: c.productId }, data: { reserved: Math.max(0, p.reserved - need) } });
-      await move(c.productId, "MO_COMPONENT_CONSUME", -need, mo.number, `Consumed in ${mo.number}`, tx);
+      await move(c.productId, "MO_COMPONENT_CONSUME", -need, mo.number, `Consumed in ${mo.number}`, tx, false, user);
     }
-    await move(mo.productId, "MO_FINISHED_PRODUCE", mo.qty, mo.number, `Produced from ${mo.number}`, tx);
+    await move(mo.productId, "MO_FINISHED_PRODUCE", mo.qty, mo.number, `Produced from ${mo.number}`, tx, false, user);
     const updated = await tx.manufacturingOrder.update({ where: { id: moId }, data: { status: "Done" }, include: includeManufacturing });
     await audit(user, "MO_COMPLETED", "ManufacturingOrder", updated.number, `Completed ${updated.number} and produced ${updated.qty} units`, tx, { status: mo.status }, { status: updated.status });
     return manufacturingOrderDto(updated);

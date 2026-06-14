@@ -194,8 +194,116 @@ manufacturingRouter.post("/:id/cancel", async (req, res) => {
 });
 
 export const stockRouter = Router();
-stockRouter.get("/", async (_req, res) => ok(res, (await prisma.stockMove.findMany({ include: { product: true }, orderBy: { date: "desc" } })).map(stockMoveDto)));
+function stockWhere(query) {
+  const where = {};
+  if (query.productId) where.productId = String(query.productId);
+  if (query.movementType) where.type = String(query.movementType);
+  if (query.referenceType) where.referenceType = String(query.referenceType);
+  if (query.referenceId) where.referenceId = { contains: String(query.referenceId) };
+  if (query.from || query.to) {
+    where.date = {};
+    if (query.from) where.date.gte = new Date(String(query.from));
+    if (query.to) where.date.lte = new Date(`${String(query.to)}T23:59:59`);
+  }
+  if (query.search) {
+    const search = String(query.search);
+    where.OR = [{ reference: { contains: search } }, { referenceId: { contains: search } }, { product: { is: { name: { contains: search } } } }, { product: { is: { sku: { contains: search } } } }];
+  }
+  return where;
+}
+const stockInclude = { product: true };
+const canManageInventory = (user) => ["Admin", "Inventory Manager"].includes(user?.role);
+stockRouter.get("/", async (req, res) => {
+  const take = Math.min(Number(req.query.limit || req.query.rowsPerPage || 100), 200);
+  const page = Math.max(Number(req.query.page || 1), 1);
+  const where = stockWhere(req.query);
+  const [rows, total] = await Promise.all([
+    prisma.stockMove.findMany({ where, include: stockInclude, orderBy: { date: "desc" }, skip: (page - 1) * take, take }),
+    prisma.stockMove.count({ where }),
+  ]);
+  ok(res, { rows: rows.map(stockMoveDto), total, page, rowsPerPage: take });
+});
 stockRouter.get("/product/:productId", async (req, res) => ok(res, (await prisma.stockMove.findMany({ where: { productId: req.params.productId }, include: { product: true }, orderBy: { date: "desc" } })).map(stockMoveDto)));
+stockRouter.get("/summary", async (req, res) => {
+  const where = stockWhere(req.query);
+  const [moves, products] = await Promise.all([prisma.stockMove.findMany({ where, include: stockInclude }), prisma.product.findMany()]);
+  const incoming = moves.filter((m) => m.change > 0).reduce((sum, m) => sum + m.change, 0);
+  const outgoing = Math.abs(moves.filter((m) => m.change < 0).reduce((sum, m) => sum + m.change, 0));
+  ok(res, {
+    totalMovements: moves.length,
+    incomingQty: incoming,
+    outgoingQty: outgoing,
+    reservedQty: products.reduce((sum, p) => sum + p.reserved, 0),
+    internalTransfers: moves.filter((m) => m.type === "INTERNAL_TRANSFER").length,
+    exceptions: products.filter((p) => p.onHand < 0 || p.onHand - p.reserved < 0 || p.reserved > p.onHand).length,
+  });
+});
+stockRouter.get("/map", async (req, res) => {
+  const moves = await prisma.stockMove.findMany({ where: stockWhere(req.query), include: stockInclude, orderBy: { date: "desc" }, take: 500 });
+  const edgeKey = (move) => move.type.includes("PURCHASE") ? "Vendor->Raw Material" : move.type.includes("MO_COMPONENT") ? "Raw Material->Production" : move.type.includes("MO_FINISHED") ? "Production->Finished Goods" : move.type.includes("SALE") ? "Finished Goods->Customer" : move.type.includes("SCRAP") ? "Production->Scrap" : "Warehouse->Warehouse";
+  const edgeTone = (key) => key.startsWith("Vendor") ? "incoming" : key.startsWith("Raw") ? "reserved" : key.startsWith("Production") ? "production" : key.startsWith("Finished") ? "outgoing" : key.includes("Scrap") ? "exception" : "transfer";
+  const edges = Object.values(moves.reduce((acc, move) => {
+    const key = edgeKey(move);
+    acc[key] ||= { id: key, from: key.split("->")[0], to: key.split("->")[1], quantity: 0, movements: 0, products: new Set(), latestAt: move.date, tone: edgeTone(key) };
+    acc[key].quantity += Math.abs(move.change); acc[key].movements += 1; acc[key].products.add(move.productId);
+    if (move.date > acc[key].latestAt) acc[key].latestAt = move.date;
+    return acc;
+  }, {})).map((edge) => ({ ...edge, latestAt: edge.latestAt.toISOString(), uniqueProducts: edge.products.size, products: undefined })).sort((a, b) => b.quantity - a.quantity);
+  const nodes = ["Vendor", "Raw Material", "Production", "Finished Goods", "Customer", "Scrap", "Warehouse"].map((name) => {
+    const incoming = edges.filter((edge) => edge.to === name).reduce((sum, edge) => sum + edge.quantity, 0);
+    const outgoing = edges.filter((edge) => edge.from === name).reduce((sum, edge) => sum + edge.quantity, 0);
+    const movements = edges.filter((edge) => edge.from === name || edge.to === name).reduce((sum, edge) => sum + edge.movements, 0);
+    return { id: name, name, incoming, outgoing, movements, active: movements > 0 };
+  });
+  ok(res, { generatedAt: new Date().toISOString(), nodes, edges });
+});
+stockRouter.get("/traceability", async (req, res) => {
+  const moves = await prisma.stockMove.findMany({ where: stockWhere(req.query), include: stockInclude, orderBy: { date: "asc" }, take: 200 });
+  ok(res, moves.map((m) => ({ id: m.id, product: m.product?.name, sku: m.product?.sku, movementType: m.type, referenceType: m.referenceType, referenceId: m.referenceId || m.reference, occurredAt: m.date, path: `${m.product?.name || "Product"} -> ${m.type.replaceAll("_", " ")} -> ${m.referenceId || m.reference}` })));
+});
+stockRouter.get("/exceptions", async (_req, res) => {
+  const products = await prisma.product.findMany();
+  const rows = products.flatMap((p) => {
+    const available = p.onHand - p.reserved;
+    const issues = [];
+    if (p.onHand < 0) issues.push({ severity: "Critical", product: p.name, sku: p.sku, problem: "Negative on-hand quantity", expected: ">= 0", actual: p.onHand });
+    if (available < 0) issues.push({ severity: "Critical", product: p.name, sku: p.sku, problem: "Negative available quantity", expected: ">= 0", actual: available });
+    if (p.reserved > p.onHand) issues.push({ severity: "Warning", product: p.name, sku: p.sku, problem: "Reserved quantity greater than on hand", expected: `<= ${p.onHand}`, actual: p.reserved });
+    return issues.map((issue, index) => ({ id: `${p.id}-${index}`, detectedAt: new Date().toISOString(), reference: p.sku, assignedUser: "Inventory Manager", status: "Open", resolutionNote: "", ...issue }));
+  });
+  ok(res, rows);
+});
+stockRouter.post("/adjustment", async (req, res) => {
+  if (!canManageInventory(req.user)) throw fail(403, "FORBIDDEN", "Only Admin and Inventory Manager can adjust stock");
+  const qty = Number(req.body.quantity || 0);
+  if (!req.body.productId || !Number.isFinite(qty) || qty <= 0 || !req.body.reason || !req.body.note) throw fail(400, "INVALID_ADJUSTMENT", "Product, quantity, reason and note are required");
+  const direction = String(req.body.direction || "Increase");
+  const change = direction === "Decrease" ? -qty : qty;
+  const product = await prisma.product.findUnique({ where: { id: req.body.productId } });
+  if (!product) throw fail(404, "PRODUCT_NOT_FOUND", "Product not found");
+  if (product.onHand + change < 0) throw fail(400, "INSUFFICIENT_STOCK", "Adjustment would make on-hand stock negative");
+  const moveType = change >= 0 ? "STOCK_ADJUSTMENT_IN" : "STOCK_ADJUSTMENT_OUT";
+  const result = await prisma.$transaction(async (tx) => {
+    const before = await tx.product.findUnique({ where: { id: product.id } });
+    const afterQty = before.onHand + change;
+    await tx.product.update({ where: { id: product.id }, data: { onHand: afterQty } });
+    const sm = await tx.stockMove.create({ data: { id: id("sm"), date: new Date(), productId: product.id, type: moveType, change, before: before.onHand, after: afterQty, reference: "Stock adjustment", referenceType: "ADJ", referenceId: product.sku, note: `${req.body.reason}: ${req.body.note}`, user: req.user?.name || "System" } });
+    await audit(req.user, "STOCK_ADJUSTMENT_POSTED", "Product", product.sku, `Stock adjustment posted for ${product.name}`, tx, { onHand: before.onHand }, { onHand: afterQty, reason: req.body.reason });
+    return sm;
+  });
+  ok(res, stockMoveDto({ ...result, product }));
+});
+stockRouter.post("/internal-transfer", async (req, res) => {
+  if (!canManageInventory(req.user)) throw fail(403, "FORBIDDEN", "Only Admin and Inventory Manager can create transfers");
+  const qty = Number(req.body.quantity || 0);
+  if (!req.body.productId || !req.body.sourceLocation || !req.body.destinationLocation || req.body.sourceLocation === req.body.destinationLocation || !Number.isFinite(qty) || qty <= 0) throw fail(400, "INVALID_TRANSFER", "Product, different locations and positive quantity are required");
+  const product = await prisma.product.findUnique({ where: { id: req.body.productId } });
+  if (!product) throw fail(404, "PRODUCT_NOT_FOUND", "Product not found");
+  if (product.onHand - product.reserved < qty) throw fail(400, "INSUFFICIENT_STOCK", "Not enough available stock for transfer");
+  const sm = await prisma.stockMove.create({ data: { id: id("sm"), date: new Date(), productId: product.id, type: "INTERNAL_TRANSFER", change: 0, before: product.onHand, after: product.onHand, reference: `${req.body.sourceLocation} -> ${req.body.destinationLocation}`, referenceType: "TRANSFER", referenceId: product.sku, note: req.body.note || "Internal transfer", user: req.user?.name || "System" } });
+  await audit(req.user, "INTERNAL_TRANSFER_POSTED", "Product", product.sku, `Internal transfer for ${product.name}: ${qty}`, prisma, undefined, { quantity: qty, sourceLocation: req.body.sourceLocation, destinationLocation: req.body.destinationLocation });
+  ok(res, stockMoveDto({ ...sm, product, sourceLocation: req.body.sourceLocation, destinationLocation: req.body.destinationLocation }));
+});
 
 export const auditRouter = Router();
 function auditWhere(query) {

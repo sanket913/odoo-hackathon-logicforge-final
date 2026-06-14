@@ -14,12 +14,14 @@ const nav = [
   ["dashboard", "Dashboard", CircleGauge], ["sales-orders", "Sale Orders", ShoppingCart],
   ["purchase-orders", "Purchase Orders", Truck], ["manufacturing-orders", "Manufacturing Orders", Factory],
   ["bom", "Bills of Materials", GitBranch], ["products", "Products", Package],
-  ["inventory-ledger", "Stock Ledger", Warehouse], ["audit-logs", "Audit Logs", FileClock],
+  ["inventory-ledger", "Inventory Movement", Warehouse], ["audit-logs", "Audit Logs", FileClock],
   ["customers", "Customers", Users], ["vendors", "Vendors", Boxes],
   ["users", "Users & Roles", UserRoundCog], ["alerts", "Alerts", Bell],
   ["erpilot", "ERPilot AI", Bot], ["digital-twin", "Digital Twin", ClipboardList],
   ["supply-map", "Supply Chain Map", Map], ["manufacturing-plants", "Manufacturing Plants", Factory], ["settings", "Settings", Settings],
 ] as const;
+
+const erpilotEnabled = String(import.meta.env.VITE_ENABLE_ERPILOT_AI ?? "true").toLowerCase() !== "false";
 
 const permissions: Record<string, string[]> = {
   "Sales User": ["dashboard", "sales-orders", "products", "customers", "inventory-ledger", "alerts", "erpilot", "profile"],
@@ -35,6 +37,9 @@ export function canAccess(role: string | undefined, section: string) {
 }
 
 function AppLink({ path, children, className = "" }: { path: string; children: ReactNode; className?: string }) {
+  if (path === "erpilot" || path === "digital-twin") {
+    return <Link to={`/${path}`} className={className}>{children}</Link>;
+  }
   return <Link to="/$" params={{ _splat: path }} className={className}>{children}</Link>;
 }
 
@@ -47,6 +52,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [online, setOnline] = useState<boolean | null>(null);
   const current = (pathname.split("/")[1] || "dashboard").split("?")[0] || "dashboard";
+  const showErpilotShortcut = erpilotEnabled && current !== "erpilot";
 
   useEffect(() => {
     let active = true;
@@ -70,7 +76,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Button variant="ghost" size="icon" className="ml-auto text-sidebar-foreground lg:hidden" onClick={() => setMobileOpen(false)}><X /></Button>
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-          {nav.filter(([key]) => canAccess(user?.role, key)).map(([key, label, Icon]) => (
+          {nav.filter(([key]) => erpilotEnabled || !["erpilot", "digital-twin"].includes(key)).filter(([key]) => canAccess(user?.role, key)).map(([key, label, Icon]) => (
             <AppLink key={key} path={key} className={`flex h-10 items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors ${current === key ? "bg-sidebar-primary text-sidebar-primary-foreground" : "text-sidebar-foreground/78 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"}`}>
               <Icon className="size-4 shrink-0" />{!collapsed && <span className="truncate">{label}</span>}
             </AppLink>
@@ -90,7 +96,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </header>
         <main className="p-4 sm:p-6 lg:p-7">{children}</main>
       </div>
-      <AppLink path="erpilot" className="fixed bottom-6 right-6 z-30 grid size-13 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105" ><Bot className="size-6" /></AppLink>
+      {showErpilotShortcut && <AppLink path="erpilot" className="fixed bottom-6 right-6 z-30 grid size-13 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105" ><Bot className="size-6" /></AppLink>}
     </div>
   );
 }

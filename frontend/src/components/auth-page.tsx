@@ -1,6 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
-import { ArrowRight, GitBranch, LoaderCircle, LockKeyhole, ShieldCheck, UserCheck } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, GitBranch, LoaderCircle, LockKeyhole, ShieldCheck, UserCheck } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Field, inputClass } from "@/components/erp-ui";
@@ -18,6 +18,8 @@ const seededAccounts = [
 export function AuthPage({ mode }: { mode: "login" | "signup" }) {
   const navigate = useNavigate(); const auth = useAuth(); const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ name: "", email: "", mobile: "", address: "", password: "", confirmPassword: "", requestedRole: "Sales User" });
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const set = (key: string, value: string) => setForm(prev => ({ ...prev, [key]: value }));
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -40,8 +42,8 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
         <Field label="Email ID" required><input type="email" required value={form.email} onChange={e => set("email", e.target.value)} className={inputClass} maxLength={255} /></Field>
         {mode === "signup" && <Field label="Requested Role" required><select value={form.requestedRole} onChange={e => set("requestedRole", e.target.value)} className={inputClass}>{roles.map(r => <option key={r}>{r}</option>)}</select></Field>}
         {mode === "signup" && <div className="sm:col-span-2"><Field label="Address" required><input required value={form.address} onChange={e => set("address", e.target.value)} className={inputClass} maxLength={300} /></Field></div>}
-        <Field label="Password" required><input type="password" required minLength={8} value={form.password} onChange={e => set("password", e.target.value)} className={inputClass} /></Field>
-        {mode === "signup" && <Field label="Confirm Password" required><input type="password" required minLength={8} value={form.confirmPassword} onChange={e => set("confirmPassword", e.target.value)} className={inputClass} /></Field>}
+        <Field label="Password" required><div className="relative"><input type={showPassword ? "text" : "password"} required minLength={8} value={form.password} onChange={e => set("password", e.target.value)} className={`${inputClass} pr-11`} /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} className="absolute right-2 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" onClick={() => setShowPassword(value => !value)}>{showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</button></div></Field>
+        {mode === "signup" && <Field label="Confirm Password" required><div className="relative"><input type={showConfirmPassword ? "text" : "password"} required minLength={8} value={form.confirmPassword} onChange={e => set("confirmPassword", e.target.value)} className={`${inputClass} pr-11`} /><button type="button" aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"} className="absolute right-2 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" onClick={() => setShowConfirmPassword(value => !value)}>{showConfirmPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}</button></div></Field>}
         <Button disabled={busy} size="lg" className="mt-2 sm:col-span-2">{busy ? <LoaderCircle className="animate-spin" /> : <ArrowRight />}{mode === "login" ? "Login" : "Create Account"}</Button>
       </form>
       {mode === "login" && (
