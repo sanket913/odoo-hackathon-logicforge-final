@@ -6,10 +6,10 @@ export const dashboardRouter = Router();
 
 dashboardRouter.get("/summary", async (_req, res) => {
   const [products, salesOrders, purchaseOrders, manufacturingOrders, stockMoves, auditLogs, alerts] = await Promise.all([
-    prisma.product.findMany(),
-    prisma.salesOrder.findMany(),
-    prisma.purchaseOrder.findMany(),
-    prisma.manufacturingOrder.findMany(),
+    prisma.product.findMany({ orderBy: { updatedAt: "desc" } }),
+    prisma.salesOrder.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.purchaseOrder.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.manufacturingOrder.findMany({ orderBy: { createdAt: "desc" } }),
     prisma.stockMove.findMany({ take: 8, orderBy: { date: "desc" } }),
     prisma.auditLog.findMany({ take: 8, orderBy: { timestamp: "desc" } }),
     prisma.alert.findMany({ take: 8, orderBy: { createdAt: "desc" } }),
@@ -20,14 +20,16 @@ dashboardRouter.get("/summary", async (_req, res) => {
   const purchaseCounters = buildCounters(purchaseOrders, "expectedDate", ["Draft", "Confirmed", "Partially_Received", "Fully_Received"]);
   const manufacturingCounters = buildCounters(manufacturingOrders, "createdAt", ["Draft", "Confirmed", "In_Progress", "Done"]);
   ok(res, {
+    updatedAt: new Date().toISOString(),
     products,
-    salesOrders,
-    purchaseOrders,
-    manufacturingOrders,
+    salesOrderRecords: salesOrders,
+    purchaseOrderRecords: purchaseOrders,
+    manufacturingOrderRecords: manufacturingOrders,
     stockMoves,
     auditLogs,
     alerts,
     counters: { salesOrders: salesCounters, purchaseOrders: purchaseCounters, manufacturingOrders: manufacturingCounters },
+    totals: { products: products.length, salesOrders: salesOrders.length, purchaseOrders: purchaseOrders.length, manufacturingOrders: manufacturingOrders.length, stockMoves: stockMoves.length, auditLogs: auditLogs.length, alerts: alerts.length },
     salesOrders: salesCounters.all,
     purchaseOrders: purchaseCounters.all,
     manufacturingOrders: manufacturingCounters.all,
